@@ -1,23 +1,24 @@
-import { useState, useEffect, useRef } from 'react'
+import { Suspense, lazy, useState, useEffect, useRef } from 'react'
 import { Routes, Route, NavLink, useLocation, Navigate } from 'react-router-dom'
 import { Moon, Sun, TrendingUp, Bot, ScrollText, Settings, List, Database, Clock, LayoutDashboard, LogOut, Github, BellRing, MoreHorizontal, Sparkles, Activity } from 'lucide-react'
 import { useTheme } from '@/hooks/use-theme'
 import { appApi, fetchAPI, isAuthenticated, logout } from '@panwatch/api'
-import DashboardPage from '@/pages/Dashboard'
-import OpportunitiesPage from '@/pages/Opportunities'
-import StocksPage from '@/pages/Stocks'
-import AgentsPage from '@/pages/Agents'
-import SettingsPage from '@/pages/Settings'
-import DataSourcesPage from '@/pages/DataSources'
-import HistoryPage from '@/pages/History'
-import PriceAlertsPage from '@/pages/PriceAlerts'
-import PaperTradingPage from '@/pages/PaperTrading'
-import LoginPage from '@/pages/Login'
 import LogsModal from '@panwatch/biz-ui/components/logs-modal'
 import AmbientBackground from '@panwatch/biz-ui/components/AmbientBackground'
 import ChatWidget from '@/components/ChatWidget'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@panwatch/base-ui/components/ui/dialog'
 import { Button } from '@panwatch/base-ui/components/ui/button'
+
+const DashboardPage = lazy(() => import('@/pages/Dashboard'))
+const OpportunitiesPage = lazy(() => import('@/pages/Opportunities'))
+const StocksPage = lazy(() => import('@/pages/Stocks'))
+const AgentsPage = lazy(() => import('@/pages/Agents'))
+const SettingsPage = lazy(() => import('@/pages/Settings'))
+const DataSourcesPage = lazy(() => import('@/pages/DataSources'))
+const HistoryPage = lazy(() => import('@/pages/History'))
+const PriceAlertsPage = lazy(() => import('@/pages/PriceAlerts'))
+const PaperTradingPage = lazy(() => import('@/pages/PaperTrading'))
+const LoginPage = lazy(() => import('@/pages/Login'))
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: '首页' },
@@ -79,6 +80,11 @@ function App() {
   const desktopMoreRef = useRef<HTMLDivElement | null>(null)
   const mobileMoreRef = useRef<HTMLDivElement | null>(null)
   const repoUrl = 'https://github.com/TNT-Likely/PanWatch'
+  const routeFallback = (
+    <div className="card min-h-[240px] flex items-center justify-center">
+      <span className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+    </div>
+  )
 
   useEffect(() => {
     appApi.version()
@@ -128,9 +134,11 @@ function App() {
   // 登录页面不显示导航
   if (location.pathname === '/login') {
     return (
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-      </Routes>
+      <Suspense fallback={routeFallback}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+        </Routes>
+      </Suspense>
     )
   }
 
@@ -347,17 +355,19 @@ function App() {
 
       {/* Content */}
       <main className="px-4 md:px-6 py-4 md:py-6 w-full">
-        <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/opportunities" element={<OpportunitiesPage />} />
-          <Route path="/portfolio" element={<StocksPage />} />
-          <Route path="/agents" element={<AgentsPage />} />
-          <Route path="/history" element={<HistoryPage />} />
-          <Route path="/paper-trading" element={<PaperTradingPage />} />
-          <Route path="/alerts" element={<PriceAlertsPage />} />
-          <Route path="/datasources" element={<DataSourcesPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
+        <Suspense fallback={routeFallback}>
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/opportunities" element={<OpportunitiesPage />} />
+            <Route path="/portfolio" element={<StocksPage />} />
+            <Route path="/agents" element={<AgentsPage />} />
+            <Route path="/history" element={<HistoryPage />} />
+            <Route path="/paper-trading" element={<PaperTradingPage />} />
+            <Route path="/alerts" element={<PriceAlertsPage />} />
+            <Route path="/datasources" element={<DataSourcesPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Routes>
+        </Suspense>
       </main>
       <ChatWidget />
       <LogsModal open={logsOpen} onOpenChange={setLogsOpen} />

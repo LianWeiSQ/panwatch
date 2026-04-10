@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import logging
 import threading
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from src.core.entry_candidates import (
@@ -40,6 +40,13 @@ _refresh_state = {
     "last_error": "",
     "last_snapshot_date": "",
 }
+
+
+def _normalize_market_filter(value: str | None) -> str:
+    market = (value or "").strip().upper()
+    if not market or market == "CN":
+        return market
+    raise HTTPException(400, f"unsupported market in CN-only mode: {market}")
 
 
 def _now_iso() -> str:
@@ -140,7 +147,7 @@ class CandidateFeedbackIn(BaseModel):
 
 @router.get("/entry-candidates")
 def get_entry_candidates(
-    market: str = Query("", description="市场代码: CN/HK/US"),
+    market: str = Query("", description="市场代码: CN"),
     status: str = Query("active", description="状态: active/inactive/all"),
     min_score: float = Query(0, ge=0, le=100),
     limit: int = Query(20, ge=1, le=500),
@@ -150,6 +157,7 @@ def get_entry_candidates(
     holding: str = Query("", description="持仓过滤: held/unheld/all"),
     strategy: str = Query("", description="策略标签过滤"),
 ):
+    market = _normalize_market_filter(market)
     if refresh:
         refresh_entry_candidates()
     return list_entry_candidates(
@@ -183,10 +191,11 @@ def refresh_candidates(
 
 @router.post("/entry-candidates/feedback")
 def submit_candidate_feedback(payload: CandidateFeedbackIn):
+    stock_market = _normalize_market_filter(payload.stock_market) or "CN"
     ok = save_entry_candidate_feedback(
         snapshot_date=payload.snapshot_date,
         stock_symbol=payload.stock_symbol,
-        stock_market=payload.stock_market,
+        stock_market=stock_market,
         useful=payload.useful,
         candidate_source=payload.candidate_source,
         strategy_tags=payload.strategy_tags,
@@ -219,7 +228,7 @@ def get_strategy_catalog(enabled_only: bool = Query(True, description="仅返回
 
 @router.get("/strategy-signals")
 def get_strategy_signal_list(
-    market: str = Query("", description="市场代码: CN/HK/US"),
+    market: str = Query("", description="市场代码: CN"),
     status: str = Query("all", description="状态: active/inactive/all"),
     min_score: float = Query(0, ge=0, le=100),
     limit: int = Query(50, ge=1, le=500),
@@ -230,6 +239,7 @@ def get_strategy_signal_list(
     risk_level: str = Query("", description="风险等级: low/medium/high/all"),
     include_payload: bool = Query(False, description="是否返回完整 payload（默认否，提升性能）"),
 ):
+    market = _normalize_market_filter(market)
     return list_strategy_signals(
         market=market,
         status=status,
@@ -247,9 +257,10 @@ def get_strategy_signal_list(
 @router.get("/strategy-regimes")
 def get_strategy_regimes(
     snapshot_date: str = Query("", description="快照日期 YYYY-MM-DD"),
-    market: str = Query("", description="市场过滤: CN/HK/US"),
+    market: str = Query("", description="市场过滤: CN"),
     limit: int = Query(100, ge=1, le=1000),
 ):
+    market = _normalize_market_filter(market)
     return list_market_regime_snapshots(
         snapshot_date=snapshot_date,
         market=market,
@@ -260,9 +271,10 @@ def get_strategy_regimes(
 @router.get("/strategy-risk-snapshots")
 def get_strategy_risk_snapshots(
     snapshot_date: str = Query("", description="快照日期 YYYY-MM-DD"),
-    market: str = Query("", description="市场过滤: CN/HK/US"),
+    market: str = Query("", description="市场过滤: CN"),
     limit: int = Query(100, ge=1, le=1000),
 ):
+    market = _normalize_market_filter(market)
     return list_portfolio_risk_snapshots(
         snapshot_date=snapshot_date,
         market=market,

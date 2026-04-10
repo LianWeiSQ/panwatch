@@ -26,6 +26,8 @@ from src.web.api import (
     dashboard,
     paper_trading,
     chat,
+    runtime,
+    instruments,
 )
 from src.web.api import insights
 from src.web.api.auth import get_current_user
@@ -155,6 +157,18 @@ app.include_router(
     chat.router,
     prefix="/api/chat",
     tags=["chat"],
+    dependencies=protected,
+)
+app.include_router(
+    runtime.router,
+    prefix="/api/runtime",
+    tags=["runtime"],
+    dependencies=protected,
+)
+app.include_router(
+    instruments.router,
+    prefix="/api/instruments",
+    tags=["instruments"],
     dependencies=protected,
 )
 

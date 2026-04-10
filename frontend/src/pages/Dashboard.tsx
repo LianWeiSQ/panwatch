@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+﻿import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import {
@@ -72,10 +73,7 @@ interface PortfolioSummary {
     available_funds: number
     total_assets: number
   }
-  exchange_rates?: {
-    HKD_CNY: number
-    USD_CNY?: number
-  }
+  exchange_rates?: Record<string, number>
 }
 
 interface AccountSummary {
@@ -131,11 +129,6 @@ interface Stock {
   market: string
 }
 
-interface QuoteRequestItem {
-  symbol: string
-  market: string
-}
-
 type QuoteMap = Record<string, { current_price: number | null; change_pct: number | null }>
 
 interface AnalysisRecord {
@@ -156,9 +149,6 @@ const mergePortfolioQuotes = (
 ): PortfolioSummary | null => {
   if (!portfolio) return null
 
-  const hkdRate = portfolio.exchange_rates?.HKD_CNY ?? 0.92
-  const usdRate = portfolio.exchange_rates?.USD_CNY ?? 7.25
-
   let grandMarketValue = 0
   let grandCost = 0
   let grandAvailable = 0
@@ -170,7 +160,7 @@ const mergePortfolioQuotes = (
     for (const pos of account.positions) {
       const quote = quotes[`${pos.market}:${pos.symbol}`]
       const current_price = quote?.current_price ?? pos.current_price ?? null
-      const rate = pos.market === 'HK' ? hkdRate : pos.market === 'US' ? usdRate : 1
+      const rate = 1
       const cost = pos.cost_price * pos.quantity * rate
       accCost += cost
 
@@ -220,7 +210,6 @@ export default function DashboardPage() {
 
   // Market indices
   const [indices, setIndices] = useState<MarketIndex[]>([])
-  const [indicesLoading, setIndicesLoading] = useState(true)
 
   // Market status
   const [marketStatus, setMarketStatus] = useState<MarketStatus[]>([])
@@ -228,14 +217,12 @@ export default function DashboardPage() {
   // Portfolio
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null)
   const [portfolioRaw, setPortfolioRaw] = useState<PortfolioSummary | null>(null)
-  const [portfolioLoading, setPortfolioLoading] = useState(false)
   const hasPortfolio = portfolio && portfolio.accounts.length > 0
 
   // Watchlist
   const [stocks, setStocks] = useState<Stock[]>([])
   // Keyed by `${market}:${symbol}` to avoid cross-market collisions
   const [quotes, setQuotes] = useState<QuoteMap>({})
-  const [quotesLoading, setQuotesLoading] = useState(false)
   const hasWatchlist = stocks.length > 0
 
   // Unified stock insight modal
@@ -251,7 +238,7 @@ export default function DashboardPage() {
   const [aiScanRunning, setAiScanRunning] = useState(false)
   const scanRequestRef = useRef(0)
 
-  // Auto-refresh (持久化到 localStorage)
+  // Auto-refresh (鎸佷箙鍖栧埌 localStorage)
   const [autoRefresh, setAutoRefresh] = useLocalStorage('panwatch_dashboard_autoRefresh', false)
   const [refreshInterval, setRefreshInterval] = useLocalStorage('panwatch_dashboard_refreshInterval', 30)
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(null)
@@ -265,25 +252,33 @@ export default function DashboardPage() {
   const [dailyReport, setDailyReport] = useState<AnalysisRecord | null>(null)
   const [premarketOutlook, setPremarketOutlook] = useState<AnalysisRecord | null>(null)
   const [newsDigest, setNewsDigest] = useState<AnalysisRecord | null>(null)
-  const [insightsLoading, setInsightsLoading] = useState(false)
   const [previewInsight, setPreviewInsight] = useState<AnalysisRecord | null>(null)
 
   // Discovery (Hot boards / stocks)
   const [discoverTab, setDiscoverTab] = useLocalStorage<'boards' | 'stocks'>('panwatch_dashboard_discoverTab', 'boards')
-  const [discoverMarket, setDiscoverMarket] = useLocalStorage<'CN' | 'HK' | 'US'>('panwatch_dashboard_discoverMarket', 'CN')
+  const discoverMarket: 'CN' = 'CN'
   const [stocksMode, setStocksMode] = useLocalStorage<'turnover' | 'gainers' | 'for_you'>('panwatch_dashboard_stocksMode', 'for_you')
   const [boardsMode, setBoardsMode] = useLocalStorage<'gainers' | 'turnover'>('panwatch_dashboard_boardsMode', 'gainers')
   const [hotStocks, setHotStocks] = useState<HotStockItem[]>([])
   const [hotBoards, setHotBoards] = useState<HotBoardItem[]>([])
-  const [discoverLoading, setDiscoverLoading] = useState(false)
-  const [discoverError, setDiscoverError] = useState('')
   const [boardDialogOpen, setBoardDialogOpen] = useState(false)
   const [activeBoard, setActiveBoard] = useState<HotBoardItem | null>(null)
   const [boardStocks, setBoardStocks] = useState<HotStockItem[]>([])
-  const discoveryCacheRef = useRef<{
-    boards: Record<string, { ts: number; data: HotBoardItem[] }>
-    stocks: Record<string, { ts: number; data: HotStockItem[] }>
-  }>({ boards: {}, stocks: {} })
+  const runtimeQuery = useQuery({
+    queryKey: ['dashboard-runtime', boardsMode, stocksMode],
+    queryFn: () =>
+      dashboardApi.runtime({
+        boards_mode: boardsMode,
+        stocks_mode: stocksMode,
+      }),
+    staleTime: 15_000,
+  })
+  const runtimeBusy = runtimeQuery.isFetching
+  const indicesLoading = runtimeQuery.isLoading
+  const insightsLoading = runtimeQuery.isLoading
+  const discoverLoading = runtimeBusy
+  const discoverError = runtimeQuery.error instanceof Error ? runtimeQuery.error.message : ''
+  const refetchRuntimeQuery = runtimeQuery.refetch
 
   const watchlistSet = useMemo(() => {
     return new Set((stocks || []).map(s => `${s.market}:${s.symbol}`))
@@ -311,120 +306,57 @@ export default function DashboardPage() {
     return ranked[0]?.[1] ? ranked[0][0] : null
   }, [portfolioRaw])
 
-  // Initial load
   useEffect(() => {
-    loadIndices()
-    loadMarketStatus()
-    loadPortfolio()
-    loadWatchlist()
-    loadAIInsights()
-    loadDiscovery('boards')
-    loadDiscovery('stocks', { silent: true })
-
-    // Check if onboarding should be shown
     const onboardingCompleted = localStorage.getItem('panwatch_onboarding_completed')
     if (!onboardingCompleted) {
       setShowOnboarding(true)
     }
   }, [])
 
-  // 自选股加载后自动获取监控数据
-  const initialScanDone = useRef(false)
   useEffect(() => {
-    if (hasWatchlist && !initialScanDone.current) {
-      initialScanDone.current = true
-      scanAlerts()
-    }
-  }, [hasWatchlist])
+    if (!runtimeQuery.data) return
 
-  const loadIndices = async () => {
-    setIndicesLoading(true)
-    try {
-      const data = await dashboardApi.indices()
-      setIndices(data)
-    } catch (e) {
-      console.error('获取指数失败:', e)
-    } finally {
-      setIndicesLoading(false)
-    }
-  }
-
-  const loadMarketStatus = async () => {
-    try {
-      const data = await dashboardApi.marketStatus()
-      setMarketStatus(data)
-    } catch (e) {
-      console.error('获取市场状态失败:', e)
-    }
-  }
-
-  const loadPortfolio = async () => {
-    setPortfolioLoading(true)
-    try {
-      const data = await dashboardApi.portfolioSummary({ include_quotes: false })
-      setPortfolioRaw(data)
-      setPortfolio(mergePortfolioQuotes(data, quotes))
-    } catch (e) {
-      console.error('获取持仓失败:', e)
-    } finally {
-      setPortfolioLoading(false)
-    }
-  }
-
-  const loadWatchlist = async () => {
-    try {
-      const stocksData = await dashboardApi.watchlist()
-      setStocks(stocksData)
-    } catch (e) {
-      console.error('获取自选股失败:', e)
-    }
-  }
-
-  const buildQuoteItems = useCallback((): QuoteRequestItem[] => {
-    const items: QuoteRequestItem[] = []
-    const seen = new Set<string>()
-
-    for (const stock of stocks) {
-      const key = `${stock.market}:${stock.symbol}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      items.push({ symbol: stock.symbol, market: stock.market })
-    }
-
-    for (const account of portfolioRaw?.accounts || []) {
-      for (const pos of account.positions) {
-        const key = `${pos.market}:${pos.symbol}`
-        if (seen.has(key)) continue
-        seen.add(key)
-        items.push({ symbol: pos.symbol, market: pos.market })
+    const runtime = runtimeQuery.data
+    const nextQuotes: QuoteMap = {}
+    for (const [key, row] of Object.entries(runtime.quotes || {})) {
+      nextQuotes[key] = {
+        current_price: row.current_price ?? null,
+        change_pct: row.change_pct ?? null,
       }
     }
 
-    return items
-  }, [stocks, portfolioRaw])
-
-  const refreshQuotes = useCallback(async () => {
-    const items = buildQuoteItems()
-    if (items.length === 0) return
-
-    setQuotesLoading(true)
-    try {
-      const data = await dashboardApi.batchQuotes(items)
-      const map: QuoteMap = {}
-      for (const item of data) {
-        map[`${item.market}:${item.symbol}`] = {
-          current_price: item.current_price ?? null,
-          change_pct: item.change_pct ?? null,
-        }
-      }
-      setQuotes(map)
-      setLastRefreshTime(new Date())
-    } catch (e) {
-      console.warn('刷新行情失败:', e)
-    } finally {
-      setQuotesLoading(false)
+    setIndices(runtime.indices || [])
+    setMarketStatus(runtime.market_status || [])
+    setPortfolioRaw(runtime.portfolio || null)
+    setPortfolio(mergePortfolioQuotes(runtime.portfolio || null, nextQuotes))
+    setStocks(runtime.watchlist || [])
+    setQuotes(nextQuotes)
+    setDailyReport(runtime.insights?.daily_report || null)
+    setPremarketOutlook(runtime.insights?.premarket_outlook || null)
+    setNewsDigest(runtime.insights?.news_digest || null)
+    setHotBoards(runtime.discovery?.boards || [])
+    setHotStocks(
+      (runtime.discovery?.stocks || []).map(item => ({
+        ...item,
+        price: item.price ?? null,
+      }))
+    )
+    if (!scanning && !aiScanRunning) {
+      setMonitorStocks(runtime.monitor_stocks || [])
     }
-  }, [buildQuoteItems])
+    if (runtimeQuery.dataUpdatedAt > 0) {
+      setLastRefreshTime(new Date(runtimeQuery.dataUpdatedAt))
+    }
+  }, [runtimeQuery.data, runtimeQuery.dataUpdatedAt, scanning, aiScanRunning])
+
+  const refreshRuntime = useCallback(async () => {
+    const result = await refetchRuntimeQuery()
+    if (result.error) {
+      throw result.error
+    }
+    setLastRefreshTime(new Date())
+    return result.data
+  }, [refetchRuntimeQuery])
 
   const openStockInsight = useCallback((symbol: string, market: string, name?: string, hasPosition?: boolean) => {
     setInsightSymbol(symbol)
@@ -434,22 +366,12 @@ export default function DashboardPage() {
     setInsightOpen(true)
   }, [])
 
-  useEffect(() => {
-    if (!portfolioRaw) return
-    setPortfolio(mergePortfolioQuotes(portfolioRaw, quotes))
-  }, [portfolioRaw, quotes])
-
-  useEffect(() => {
-    if (stocks.length === 0 && (!portfolioRaw || portfolioRaw.accounts.length === 0)) return
-    refreshQuotes()
-  }, [stocks, portfolioRaw, refreshQuotes])
-
   // Auto-refresh timer
   useEffect(() => {
     if (autoRefresh) {
-      refreshQuotes()
+      refreshRuntime().catch(() => {})
       refreshTimerRef.current = setInterval(() => {
-        refreshQuotes()
+        refreshRuntime().catch(() => {})
       }, refreshInterval * 1000)
     } else {
       if (refreshTimerRef.current) {
@@ -463,95 +385,7 @@ export default function DashboardPage() {
         clearInterval(refreshTimerRef.current)
       }
     }
-  }, [autoRefresh, refreshInterval, refreshQuotes])
-
-  const loadAIInsights = async () => {
-    setInsightsLoading(true)
-    try {
-      const [dailyData, premarketData, newsData] = await Promise.all([
-        dashboardApi.history({ agent_name: 'daily_report', limit: 1 }),
-        dashboardApi.history({ agent_name: 'premarket_outlook', limit: 1 }),
-        dashboardApi.history({ agent_name: 'news_digest', kind: 'all', limit: 1 }),
-      ])
-      setDailyReport(dailyData.length > 0 ? dailyData[0] : null)
-      setPremarketOutlook(premarketData.length > 0 ? premarketData[0] : null)
-      setNewsDigest(newsData.length > 0 ? newsData[0] : null)
-    } catch (e) {
-      console.error('获取 AI 洞察失败:', e)
-    } finally {
-      setInsightsLoading(false)
-    }
-  }
-
-  const loadDiscovery = async (which?: 'boards' | 'stocks', opts?: { silent?: boolean; force?: boolean }) => {
-    const tab = which || discoverTab
-    const silent = !!opts?.silent
-    const force = !!opts?.force
-
-    const cacheKey = tab === 'boards'
-      ? `${discoverMarket}:${boardsMode}`
-      : `${discoverMarket}:${stocksMode}`
-    const now = Date.now()
-    const ttlMs = 60 * 1000
-    const cache = tab === 'boards'
-      ? discoveryCacheRef.current.boards[cacheKey]
-      : discoveryCacheRef.current.stocks[cacheKey]
-    const isFresh = cache && (now - cache.ts) < ttlMs
-
-    if (!force && isFresh) {
-      if (tab === 'boards') setHotBoards(cache.data as HotBoardItem[])
-      else setHotStocks(cache.data as HotStockItem[])
-      return
-    }
-
-    if (!silent) {
-      setDiscoverLoading(true)
-      setDiscoverError('')
-    }
-    try {
-      if (tab === 'boards') {
-        const items = await discoveryApi.listHotBoards({
-          market: discoverMarket,
-          mode: boardsMode,
-          limit: 12,
-        })
-        const normalized = items || []
-        setHotBoards(normalized)
-        discoveryCacheRef.current.boards[cacheKey] = { ts: now, data: normalized }
-      } else {
-        if (stocksMode === 'for_you') {
-          const [turnoverItems, gainerItems] = await Promise.all([
-            discoveryApi.listHotStocks({ market: discoverMarket, mode: 'turnover', limit: 20 }),
-            discoveryApi.listHotStocks({ market: discoverMarket, mode: 'gainers', limit: 20 }),
-          ])
-          const map = new Map<string, HotStockItem>()
-          for (const item of [...(turnoverItems || []), ...(gainerItems || [])]) {
-            map.set(item.symbol, item)
-          }
-          const normalized = Array.from(map.values())
-          setHotStocks(normalized)
-          discoveryCacheRef.current.stocks[cacheKey] = { ts: now, data: normalized }
-        } else {
-          const items = await discoveryApi.listHotStocks({
-            market: discoverMarket,
-            mode: stocksMode,
-            limit: 20,
-          })
-          const normalized = items || []
-          setHotStocks(normalized)
-          discoveryCacheRef.current.stocks[cacheKey] = { ts: now, data: normalized }
-        }
-      }
-    } catch (e) {
-      if (!silent) {
-        setDiscoverError(e instanceof Error ? e.message : '加载失败')
-        if (tab === 'boards') setHotBoards([])
-        else setHotStocks([])
-      }
-    } finally {
-      if (!silent) setDiscoverLoading(false)
-    }
-  }
+  }, [autoRefresh, refreshInterval, refreshRuntime])
 
   const openBoard = async (b: HotBoardItem) => {
     setActiveBoard(b)
@@ -610,14 +444,11 @@ export default function DashboardPage() {
   }, [hasWatchlist])
 
   const handleRefresh = async () => {
-    await Promise.all([
-      refreshQuotes(),
-      loadIndices(),
-      loadMarketStatus(),
-      loadAIInsights(),
-      loadDiscovery(discoverTab, { force: true }),
-    ])
-    setLastRefreshTime(new Date())
+    try {
+      await refreshRuntime()
+    } catch (e) {
+      console.warn('刷新 Dashboard 失败:', e)
+    }
   }
 
   const formatMoney = (value: number) => {
@@ -636,23 +467,19 @@ export default function DashboardPage() {
   }
 
   const marketBadge = (m: string) => {
-    if (m === 'HK') return { style: 'bg-orange-500/10 text-orange-600', label: '港' }
-    if (m === 'US') return { style: 'bg-green-500/10 text-green-600', label: '美' }
+    if (m === 'CN_FUT') return { style: 'bg-amber-500/10 text-amber-700', label: '期' }
+    if (m === 'CN_OPT') return { style: 'bg-fuchsia-500/10 text-fuchsia-700', label: '权' }
     return { style: 'bg-blue-500/10 text-blue-600', label: 'A' }
   }
 
   const handleOnboardingComplete = () => {
     localStorage.setItem('panwatch_onboarding_completed', 'true')
     setShowOnboarding(false)
-    // Reload data in case sample stocks were added
-    loadWatchlist()
+    refreshRuntime().catch(() => {})
   }
 
   const portfolioDayPnl = useMemo(() => {
     if (!portfolioRaw) return null
-    const hkdRate = portfolioRaw.exchange_rates?.HKD_CNY ?? 0.92
-    const usdRate = portfolioRaw.exchange_rates?.USD_CNY ?? 7.25
-
     let dayPnl = 0
     let prevMv = 0
     let posCount = 0
@@ -663,7 +490,7 @@ export default function DashboardPage() {
         if (!q || q.current_price == null || q.change_pct == null) continue
         const prev = q.change_pct === -100 ? null : (q.current_price / (1 + q.change_pct / 100))
         if (prev == null || !isFinite(prev)) continue
-        const fx = p.market === 'HK' ? hkdRate : p.market === 'US' ? usdRate : 1
+        const fx = 1
         const qty = p.quantity || 0
         posCount += 1
         dayPnl += (q.current_price - prev) * qty * fx
@@ -685,9 +512,6 @@ export default function DashboardPage() {
         best: null as null | { market: string; symbol: string; name: string; day_pnl: number; day_pct: number },
       }
     }
-    const hkdRate = portfolioRaw.exchange_rates?.HKD_CNY ?? 0.92
-    const usdRate = portfolioRaw.exchange_rates?.USD_CNY ?? 7.25
-
     const rows: Array<{ market: string; symbol: string; name: string; day_pnl: number; day_pct: number }> = []
     for (const acc of portfolioRaw.accounts || []) {
       for (const p of acc.positions || []) {
@@ -695,7 +519,7 @@ export default function DashboardPage() {
         if (!q || q.current_price == null || q.change_pct == null) continue
         const prev = q.change_pct === -100 ? null : (q.current_price / (1 + q.change_pct / 100))
         if (prev == null || !isFinite(prev)) continue
-        const fx = p.market === 'HK' ? hkdRate : p.market === 'US' ? usdRate : 1
+        const fx = 1
         const qty = p.quantity || 0
         const pnl = (q.current_price - prev) * qty * fx
         const prevMv = prev * qty * fx
@@ -804,12 +628,6 @@ export default function DashboardPage() {
     return hotStocks.slice(0, 8)
   }, [stocksMode, personalizedHotStocks, hotStocks])
 
-  useEffect(() => {
-    loadDiscovery('boards', { silent: true })
-    loadDiscovery('stocks', { silent: true })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [discoverMarket, boardsMode, stocksMode])
-
   return (
     <div>
       {/* Onboarding */}
@@ -868,8 +686,8 @@ export default function DashboardPage() {
               )}
             </div>
 
-            <Button variant="secondary" size="sm" onClick={handleRefresh} disabled={quotesLoading || portfolioLoading} className="h-9 px-3">
-              <RefreshCw className={`w-4 h-4 ${quotesLoading || portfolioLoading ? 'animate-spin' : ''}`} />
+            <Button variant="secondary" size="sm" onClick={handleRefresh} disabled={runtimeBusy} className="h-9 px-3">
+              <RefreshCw className={`w-4 h-4 ${runtimeBusy ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline">刷新</span>
             </Button>
           </div>
@@ -1083,20 +901,10 @@ export default function DashboardPage() {
             >
               进入机会页
             </Button>
-            <Select value={discoverMarket} onValueChange={(v) => setDiscoverMarket(v as any)}>
-              <SelectTrigger className="h-7 w-[90px] text-[12px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="CN">A股</SelectItem>
-                <SelectItem value="HK">港股</SelectItem>
-                <SelectItem value="US">美股</SelectItem>
-              </SelectContent>
-            </Select>
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => loadDiscovery()}
+              onClick={() => { refreshRuntime().catch(() => {}) }}
               disabled={discoverLoading}
               className="h-7 text-[12px]"
               title="刷新"
@@ -1113,13 +921,13 @@ export default function DashboardPage() {
         <div className="card p-4">
           <div className="flex items-center gap-1.5 mb-3">
             <button
-              onClick={() => { setDiscoverTab('boards'); loadDiscovery('boards') }}
+              onClick={() => { setDiscoverTab('boards') }}
               className={`text-[11px] px-2.5 py-1 rounded transition-colors ${discoverTab === 'boards' ? 'bg-primary text-primary-foreground' : 'bg-accent/50 text-muted-foreground hover:bg-accent'}`}
             >
               热门板块
             </button>
             <button
-              onClick={() => { setDiscoverTab('stocks'); loadDiscovery('stocks') }}
+              onClick={() => { setDiscoverTab('stocks') }}
               className={`text-[11px] px-2.5 py-1 rounded transition-colors ${discoverTab === 'stocks' ? 'bg-primary text-primary-foreground' : 'bg-accent/50 text-muted-foreground hover:bg-accent'}`}
             >
               热门股票
@@ -1127,7 +935,7 @@ export default function DashboardPage() {
 
             <div className="ml-auto flex items-center gap-2">
               {discoverTab === 'boards' ? (
-                <Select value={boardsMode} onValueChange={(v) => { setBoardsMode(v as any); setTimeout(() => loadDiscovery('boards'), 0) }}>
+                <Select value={boardsMode} onValueChange={(v) => { setBoardsMode(v as any) }}>
                   <SelectTrigger className="h-7 w-[110px] text-[12px]">
                     <SelectValue />
                   </SelectTrigger>
@@ -1137,7 +945,7 @@ export default function DashboardPage() {
                   </SelectContent>
                 </Select>
               ) : (
-                <Select value={stocksMode} onValueChange={(v) => { setStocksMode(v as any); setTimeout(() => loadDiscovery('stocks'), 0) }}>
+                <Select value={stocksMode} onValueChange={(v) => { setStocksMode(v as any) }}>
                   <SelectTrigger className="h-7 w-[110px] text-[12px]">
                     <SelectValue />
                   </SelectTrigger>
@@ -1163,18 +971,7 @@ export default function DashboardPage() {
           ) : discoverTab === 'boards' ? (
             hotBoards.length === 0 ? (
               <div className="text-[12px] text-muted-foreground py-6 text-center">
-                {discoverError || (
-                  discoverMarket === 'CN'
-                    ? '暂无数据'
-                    : `${discoverMarket === 'HK' ? '港股' : '美股'}暂不提供板块榜，已支持热门股票`
-                )}
-                {discoverMarket !== 'CN' && (
-                  <div className="mt-2">
-                    <Button variant="ghost" size="sm" className="h-7 text-[11px]" onClick={() => setDiscoverTab('stocks')}>
-                      切换到热门股票
-                    </Button>
-                  </div>
-                )}
+                {discoverError || '暂无数据'}
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -1475,3 +1272,4 @@ export default function DashboardPage() {
     </div>
   )
 }
+

@@ -22,6 +22,26 @@ class Settings(BaseSettings):
 
     # 代理
     http_proxy: str = ""
+    tushare_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("TUSHARE_TOKEN", "PANWATCH_TUSHARE_TOKEN"),
+    )
+    tushare_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "TUSHARE_BASE_URL",
+            "PANWATCH_TUSHARE_BASE_URL",
+        ),
+    )
+
+    # Redis / runtime infra
+    redis_url: str = ""
+    service_role: str = Field(
+        default="all",
+        validation_alias=AliasChoices("PANWATCH_SERVICE_ROLE", "SERVICE_ROLE"),
+    )
+    market_warm_interval_seconds: int = 45
+    market_warm_discovery_interval_seconds: int = 300
 
     # 通知策略（可通过 UI 的“系统设置”覆盖）
     # 静默时间段（本地时区），格式: HH:MM-HH:MM，空为关闭；跨夜示例: 23:00-07:00

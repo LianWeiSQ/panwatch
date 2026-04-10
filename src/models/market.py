@@ -8,6 +8,8 @@ class MarketCode(str, Enum):
     CN = "CN"  # A股
     HK = "HK"  # 港股
     US = "US"  # 美股
+    CN_FUT = "CN_FUT"  # 国内期货
+    CN_OPT = "CN_OPT"  # 国内期权
 
 
 @dataclass
@@ -41,10 +43,12 @@ class MarketDef:
             return False
 
         current_time = dt.time()
-        return any(
-            session.start <= current_time <= session.end
-            for session in self.sessions
-        )
+        def _in_session(session: TradingSession) -> bool:
+            if session.start <= session.end:
+                return session.start <= current_time <= session.end
+            return current_time >= session.start or current_time <= session.end
+
+        return any(_in_session(session) for session in self.sessions)
 
 
 # 预定义市场
@@ -77,6 +81,28 @@ MARKETS: dict[MarketCode, MarketDef] = {
             TradingSession(time(9, 30), time(16, 0)),
         ],
         symbol_pattern=r"^[A-Z]{1,5}$",
+    ),
+    MarketCode.CN_FUT: MarketDef(
+        code=MarketCode.CN_FUT,
+        name="国内期货",
+        timezone="Asia/Shanghai",
+        sessions=[
+            TradingSession(time(9, 0), time(10, 15)),
+            TradingSession(time(10, 30), time(11, 30)),
+            TradingSession(time(13, 30), time(15, 0)),
+            TradingSession(time(21, 0), time(23, 0)),
+        ],
+        symbol_pattern=r"^[A-Z]{1,4}\d{0,4}$",
+    ),
+    MarketCode.CN_OPT: MarketDef(
+        code=MarketCode.CN_OPT,
+        name="国内期权",
+        timezone="Asia/Shanghai",
+        sessions=[
+            TradingSession(time(9, 30), time(11, 30)),
+            TradingSession(time(13, 0), time(15, 0)),
+        ],
+        symbol_pattern=r"^[A-Z0-9\-]{2,32}$",
     ),
 }
 

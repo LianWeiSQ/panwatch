@@ -27,6 +27,7 @@ from src.core.scheduler import AgentScheduler
 from src.core.price_alert_scheduler import PriceAlertScheduler
 from src.core.paper_trading_scheduler import PaperTradingScheduler
 from src.core.context_scheduler import ContextMaintenanceScheduler
+from src.core.market_warm_scheduler import MarketWarmScheduler
 from src.core.agent_runs import record_agent_run
 from src.core.log_context import install_log_record_factory, log_context
 from src.core.agent_catalog import (
@@ -48,6 +49,24 @@ scheduler: AgentScheduler | None = None
 price_alert_scheduler: PriceAlertScheduler | None = None
 paper_trading_scheduler: PaperTradingScheduler | None = None
 context_maintenance_scheduler: ContextMaintenanceScheduler | None = None
+market_warm_scheduler: MarketWarmScheduler | None = None
+
+
+def _service_role() -> str:
+    value = (Settings().service_role or "all").strip().lower()
+    return value or "all"
+
+
+def _should_start_scheduler_workers() -> bool:
+    return _service_role() in {"all", "scheduler-worker"}
+
+
+def _should_start_market_worker() -> bool:
+    return _service_role() in {"all", "market-worker"}
+
+
+def _should_refresh_stock_cache() -> bool:
+    return _service_role() in {"all", "web"}
 
 
 def setup_ssl():
@@ -193,6 +212,7 @@ def seed_sample_stocks():
             {"symbol": "00700", "name": "腾讯控股", "market": "HK"},
             {"symbol": "AAPL", "name": "苹果", "market": "US"},
         ]
+        samples = [row for row in samples if row.get("market") == "CN"]
         for s in samples:
             db.add(Stock(**s))
         db.commit()
@@ -815,6 +835,12 @@ def reload_scheduler() -> bool:
     """重载调度器（用于配置导入/批量修改后立即生效）"""
     global scheduler
     try:
+        if not _should_start_scheduler_workers():
+            logger.info(
+                "skip scheduler reload because service role '%s' does not run scheduler workers",
+                _service_role(),
+            )
+            return False
         current = globals().get("scheduler")
         if current:
             try:
@@ -1102,57 +1128,86 @@ async def lifespan(app):
             logger.info("股票列表缓存为空或缺少 A 股，后台刷新中...")
             refresh_stock_list()
 
-    threading.Thread(target=refresh_stock_cache, daemon=True).start()
+    if _should_refresh_stock_cache():
+        threading.Thread(target=refresh_stock_cache, daemon=True).start()
+    else:
+        logger.info(
+            "skip stock list background refresh for service role '%s'",
+            _service_role(),
+        )
 
-    global scheduler, price_alert_scheduler, paper_trading_scheduler, context_maintenance_scheduler
-    scheduler = build_scheduler()
-    scheduler.start()
-    logger.info("Agent 调度器已启动")
-    try:
-        settings = Settings()
-        price_alert_scheduler = PriceAlertScheduler(
-            timezone=settings.app_timezone,
-            interval_seconds=60,
-        )
-        price_alert_scheduler.start()
-        logger.info("价格提醒调度器已启动")
-    except Exception as e:
-        logger.error(f"价格提醒调度器启动失败: {e}")
-    try:
-        settings = Settings()
-        paper_trading_scheduler = PaperTradingScheduler(
-            timezone=settings.app_timezone,
-            interval_seconds=60,
-        )
-        paper_trading_scheduler.start()
-        logger.info("模拟盘调度器已启动")
-    except Exception as e:
-        logger.error(f"模拟盘调度器启动失败: {e}")
-    try:
-        settings = Settings()
-        context_maintenance_scheduler = ContextMaintenanceScheduler(
-            timezone=settings.app_timezone,
-            eval_interval_hours=6,
-            snapshot_retention_days=180,
-            outcome_retention_days=365,
-        )
-        context_maintenance_scheduler.start()
-        logger.info("上下文维护调度器已启动")
-    except Exception as e:
-        logger.error(f"上下文维护调度器启动失败: {e}")
+    global scheduler, price_alert_scheduler, paper_trading_scheduler, context_maintenance_scheduler, market_warm_scheduler
+    settings = Settings()
+    role = _service_role()
+
+    if _should_start_scheduler_workers():
+        scheduler = build_scheduler()
+        scheduler.start()
+        logger.info("Agent 调度器已启动")
+        try:
+            price_alert_scheduler = PriceAlertScheduler(
+                timezone=settings.app_timezone,
+                interval_seconds=60,
+            )
+            price_alert_scheduler.start()
+            logger.info("价格提醒调度器已启动")
+        except Exception as e:
+            logger.error(f"价格提醒调度器启动失败: {e}")
+        try:
+            paper_trading_scheduler = PaperTradingScheduler(
+                timezone=settings.app_timezone,
+                interval_seconds=60,
+            )
+            paper_trading_scheduler.start()
+            logger.info("模拟盘调度器已启动")
+        except Exception as e:
+            logger.error(f"模拟盘调度器启动失败: {e}")
+        try:
+            context_maintenance_scheduler = ContextMaintenanceScheduler(
+                timezone=settings.app_timezone,
+                eval_interval_hours=6,
+                snapshot_retention_days=180,
+                outcome_retention_days=365,
+            )
+            context_maintenance_scheduler.start()
+            logger.info("上下文维护调度器已启动")
+        except Exception as e:
+            logger.error(f"上下文维护调度器启动失败: {e}")
+    else:
+        logger.info("service role '%s' running without scheduler workers", role)
+
+    if _should_start_market_worker():
+        try:
+            market_warm_scheduler = MarketWarmScheduler(
+                timezone=settings.app_timezone,
+                quote_interval_seconds=settings.market_warm_interval_seconds,
+                discovery_interval_seconds=settings.market_warm_discovery_interval_seconds,
+            )
+            market_warm_scheduler.start()
+        except Exception as e:
+            logger.error(f"market warm scheduler startup failed: {e}")
+    else:
+        logger.info("service role '%s' running without market warm worker", role)
     yield
     if scheduler:
         scheduler.shutdown()
         logger.info("Agent 调度器已关闭")
+        scheduler = None
     if price_alert_scheduler:
         price_alert_scheduler.shutdown()
         logger.info("价格提醒调度器已关闭")
+        price_alert_scheduler = None
     if paper_trading_scheduler:
         paper_trading_scheduler.shutdown()
         logger.info("模拟盘调度器已关闭")
+        paper_trading_scheduler = None
     if context_maintenance_scheduler:
         context_maintenance_scheduler.shutdown()
         logger.info("上下文维护调度器已关闭")
+        context_maintenance_scheduler = None
+    if market_warm_scheduler:
+        market_warm_scheduler.shutdown()
+        market_warm_scheduler = None
 
 
 # 模块级 app 实例，供 uvicorn reload 使用

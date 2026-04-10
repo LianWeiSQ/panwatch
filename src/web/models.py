@@ -79,6 +79,41 @@ class Account(Base):
     )
 
 
+class Instrument(Base):
+    __tablename__ = "instruments"
+    __table_args__ = (
+        UniqueConstraint(
+            "instrument_type", "market", "symbol", name="uq_instrument_type_market_symbol"
+        ),
+        Index("ix_instruments_market_type", "market", "instrument_type"),
+        Index("ix_instruments_symbol_market", "symbol", "market"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    instrument_type = Column(String, nullable=False, default="equity")
+    market = Column(String, nullable=False)
+    symbol = Column(String, nullable=False)
+    display_symbol = Column(String, default="")
+    name = Column(String, nullable=False)
+    exchange = Column(String, default="")
+    currency = Column(String, default="CNY")
+    underlying_symbol = Column(String, default="")
+    underlying_name = Column(String, default="")
+    contract_multiplier = Column(Float, nullable=False, default=1.0)
+    tick_size = Column(Float, nullable=True)
+    expiry_date = Column(String, default="")
+    is_main_contract = Column(Boolean, default=False)
+    option_type = Column(String, default="")
+    strike_price = Column(Float, nullable=True)
+    exercise_style = Column(String, default="")
+    status = Column(String, default="active")
+    meta = Column(JSON, default={})
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    stock = relationship("Stock", back_populates="instrument", uselist=False)
+
+
 class Stock(Base):
     __tablename__ = "stocks"
 
@@ -86,6 +121,11 @@ class Stock(Base):
     symbol = Column(String, nullable=False)
     name = Column(String, nullable=False)
     market = Column(String, nullable=False)  # CN / HK / US
+    instrument_id = Column(
+        Integer,
+        ForeignKey("instruments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # 以下字段已废弃，持仓信息移至 Position 表
     cost_price = Column(Float, nullable=True)
     quantity = Column(Integer, nullable=True)
@@ -100,6 +140,7 @@ class Stock(Base):
     positions = relationship(
         "Position", back_populates="stock", cascade="all, delete-orphan"
     )
+    instrument = relationship("Instrument", back_populates="stock", uselist=False)
 
 
 class Position(Base):

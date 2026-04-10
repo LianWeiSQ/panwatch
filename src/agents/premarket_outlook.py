@@ -74,24 +74,8 @@ class PremarketOutlookAgent(BaseAgent):
             len((yesterday_analysis.content if yesterday_analysis else "") or ""),
         )
 
-        # 2. 获取美股指数（隔夜表现）
+        # 2. CN-only mode: skip overnight US market summary.
         us_indices = []
-        try:
-            # 复用腾讯行情解析（避免手写解析导致 symbol 格式不一致）
-            from src.collectors.akshare_collector import _fetch_tencent_quotes
-
-            items = _fetch_tencent_quotes(["usDJI", "usIXIC", "usINX"])
-            for item in items:
-                us_indices.append(
-                    {
-                        "name": item.get("name") or item.get("symbol"),
-                        "current": item.get("current_price"),
-                        "change_pct": item.get("change_pct"),
-                    }
-                    )
-        except Exception as e:
-            logger.warning("[%s] 获取美股指数失败: %s", trace_id, e)
-        logger.info("[%s] 隔夜指数采集完成: count=%s", trace_id, len(us_indices))
 
         # 3/4. SignalPack（技术面+持仓+新闻）
         builder = SignalPackBuilder()
@@ -252,24 +236,6 @@ class PremarketOutlookAgent(BaseAgent):
             if len(content) > 500:
                 content = content[:500] + "..."
             lines.append(content)
-            lines.append("")
-
-        # 隔夜美股表现
-        if data.get("us_indices"):
-            lines.append("## 隔夜美股表现")
-            for idx in data["us_indices"]:
-                chg = safe_num(idx.get("change_pct"), 0)
-                current = safe_num(idx.get("current"), 0)
-                direction = (
-                    "↑"
-                    if chg > 0
-                    else "↓"
-                    if chg < 0
-                    else "→"
-                )
-                lines.append(
-                    f"- {idx.get('name')}: {current:.2f} {direction} {chg:+.2f}%"
-                )
             lines.append("")
 
         # 相关新闻
@@ -506,13 +472,6 @@ class PremarketOutlookAgent(BaseAgent):
             if not sym:
                 continue
             symbol_map[sym.upper()] = sym
-            if getattr(s, "market", None) == MarketCode.HK and sym.isdigit():
-                try:
-                    symbol_map[str(int(sym))] = sym
-                except ValueError:
-                    pass
-                symbol_map[f"HK{sym}"] = sym
-                symbol_map[f"{sym}.HK"] = sym
             if (
                 getattr(s, "market", None) == MarketCode.CN
                 and sym.isdigit()
@@ -599,13 +558,6 @@ class PremarketOutlookAgent(BaseAgent):
             if not sym:
                 continue
             symbol_map[sym.upper()] = sym
-            if getattr(s, "market", None) == MarketCode.HK and sym.isdigit():
-                try:
-                    symbol_map[str(int(sym))] = sym
-                except ValueError:
-                    pass
-                symbol_map[f"HK{sym}"] = sym
-                symbol_map[f"{sym}.HK"] = sym
             if (
                 getattr(s, "market", None) == MarketCode.CN
                 and sym.isdigit()

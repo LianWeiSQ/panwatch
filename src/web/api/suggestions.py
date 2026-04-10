@@ -1,6 +1,6 @@
 """建议池 API"""
 import logging
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from src.web.database import get_db
@@ -14,10 +14,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _normalize_market(value: str | None, *, default: str | None = None) -> str | None:
+    market = (value or "").strip().upper()
+    if not market:
+        return default
+    if market != "CN":
+        raise HTTPException(400, f"unsupported market in CN-only mode: {market}")
+    return market
+
+
 @router.get("/{symbol}")
 def get_stock_suggestions(
     symbol: str,
-    market: str = Query("", description="市场代码: CN/HK/US"),
+    market: str = Query("", description="市场代码: CN"),
     include_expired: bool = Query(False, description="是否包含已过期建议"),
     limit: int = Query(10, description="返回数量限制"),
     db: Session = Depends(get_db),
@@ -29,7 +38,7 @@ def get_stock_suggestions(
     """
     suggestions = get_suggestions_for_stock(
         stock_symbol=symbol,
-        stock_market=(market or "").strip().upper() or None,
+        stock_market=_normalize_market(market, default="CN"),
         include_expired=include_expired,
         limit=limit,
     )
@@ -67,7 +76,7 @@ def get_all_latest_suggestions(
                 parsed.append((text.strip().upper(), "CN"))
                 continue
             market, symbol = text.split(":", 1)
-            mkt = (market or "CN").strip().upper() or "CN"
+            mkt = _normalize_market(market, default="CN") or "CN"
             sym = (symbol or "").strip().upper()
             if sym:
                 parsed.append((sym, mkt))

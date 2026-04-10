@@ -304,10 +304,11 @@ export default function PaperTradingPage() {
       {account && (
         <div className="flex items-center gap-2 text-sm">
           <span className="text-muted-foreground text-xs">交易市场:</span>
-          {(['CN', 'HK', 'US'] as const).map(market => {
+          {(['CN'] as const).map(market => {
             const excluded = account.excluded_markets || []
             const isEnabled = !excluded.includes(market)
-            const label = market === 'CN' ? 'A股' : market === 'HK' ? '港股' : '美股'
+            const labelText = 'A股'
+            const label = 'A股'
             return (
               <button
                 key={market}
@@ -327,7 +328,7 @@ export default function PaperTradingPage() {
                     : 'bg-muted/50 text-muted-foreground line-through'
                 }`}
               >
-                {label}
+                {labelText || label}
               </button>
             )
           })}

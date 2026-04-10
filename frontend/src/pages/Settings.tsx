@@ -797,6 +797,7 @@ export default function SettingsPage() {
                     <Label>{setting.description || setting.key}</Label>
                     <div className="flex items-center gap-2.5">
                       <Input
+                        type={setting.key.includes('token') ? 'password' : 'text'}
                         value={currentValue}
                         onChange={e => setEdited({ ...edited, [setting.key]: e.target.value })}
                         className={`font-mono ${isChanged ? 'ring-2 ring-primary/20 border-primary/30' : ''}`}

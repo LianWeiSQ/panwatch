@@ -384,13 +384,6 @@ class DailyReportAgent(BaseAgent):
             if not sym:
                 continue
             symbol_map[sym.upper()] = sym
-            if getattr(s, "market", None) == MarketCode.HK and sym.isdigit():
-                try:
-                    symbol_map[str(int(sym))] = sym  # 兼容去掉前导 0（如 00700 -> 700）
-                except ValueError:
-                    pass
-                symbol_map[f"HK{sym}"] = sym
-                symbol_map[f"{sym}.HK"] = sym
             if (
                 getattr(s, "market", None) == MarketCode.CN
                 and sym.isdigit()
@@ -485,13 +478,6 @@ class DailyReportAgent(BaseAgent):
             if not sym:
                 continue
             symbol_map[sym.upper()] = sym
-            if getattr(s, "market", None) == MarketCode.HK and sym.isdigit():
-                try:
-                    symbol_map[str(int(sym))] = sym
-                except ValueError:
-                    pass
-                symbol_map[f"HK{sym}"] = sym
-                symbol_map[f"{sym}.HK"] = sym
             if (
                 getattr(s, "market", None) == MarketCode.CN
                 and sym.isdigit()

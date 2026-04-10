@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+﻿import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wallet, PiggyBank, ArrowUpRight, ArrowDownRight, Building2, ChevronDown, ChevronRight, Cpu, Bell, Clock, Newspaper, ExternalLink, BarChart3 } from 'lucide-react'
 import { fetchAPI, stocksApi, type AIService, type NotifyChannel } from '@panwatch/api'
 import { useLocalStorage } from '@/lib/utils'
@@ -39,6 +40,15 @@ interface Stock {
   symbol: string
   name: string
   market: string
+  instrument_id?: number | null
+  instrument_type?: string
+  exchange?: string | null
+  underlying_symbol?: string | null
+  underlying_name?: string | null
+  contract_multiplier?: number | null
+  tick_size?: number | null
+  expiry_date?: string | null
+  is_main_contract?: boolean | null
   sort_order?: number
   agents: StockAgentInfo[]
 }
@@ -53,22 +63,30 @@ interface Account {
 interface Position {
   id: number
   stock_id: number
+  instrument_id?: number | null
+  instrument_type?: string
   sort_order?: number
   symbol: string
   name: string
   market: string
+  exchange?: string | null
+  underlying_symbol?: string | null
+  underlying_name?: string | null
+  contract_multiplier?: number | null
+  expiry_date?: string | null
+  is_main_contract?: boolean | null
   cost_price: number
   quantity: number
   invested_amount: number | null
-  trading_style: string  // short: 短线, swing: 波段, long: 长线
+  trading_style: string  // short: 鐭嚎, swing: 娉㈡, long: 闀跨嚎
   current_price: number | null
-  current_price_cny: number | null  // 人民币价格（港股换算后）
+  current_price_cny: number | null  // 浜烘皯甯佷环鏍硷紙娓偂鎹㈢畻鍚庯級
   change_pct: number | null
   market_value: number | null
-  market_value_cny: number | null  // 人民币市值
+  market_value_cny: number | null  // 浜烘皯甯佸競鍊?
   pnl: number | null
   pnl_pct: number | null
-  exchange_rate: number | null  // 汇率（仅港股）
+  exchange_rate: number | null  // 姹囩巼锛堜粎娓偂锛?
 }
 
 interface AccountSummary {
@@ -93,10 +111,7 @@ interface PortfolioSummary {
     available_funds: number
     total_assets: number
   }
-  exchange_rates?: {
-    HKD_CNY: number
-    USD_CNY?: number
-  }
+  exchange_rates?: Record<string, number>
   quotes?: Record<string, { current_price: number | null; change_pct: number | null }>
 }
 
@@ -106,7 +121,7 @@ interface AgentConfig {
   description: string
   enabled: boolean
   schedule: string
-  execution_mode: string  // batch: 批量分析, single: 逐只分析
+  execution_mode: string  // batch: 鎵归噺鍒嗘瀽, single: 閫愬彧鍒嗘瀽
 }
 
 interface SchedulePreview {
@@ -119,18 +134,12 @@ interface SearchResult {
   symbol: string
   name: string
   market: string
-}
-
-interface QuoteRequestItem {
-  symbol: string
-  market: string
-}
-
-interface QuoteResponse {
-  symbol: string
-  market: string
-  current_price: number | null
-  change_pct: number | null
+  instrument_type?: string
+  exchange?: string
+  underlying_name?: string
+  contract_multiplier?: number | null
+  expiry_date?: string
+  is_main_contract?: boolean
 }
 
 interface StockForm {
@@ -151,20 +160,20 @@ interface PositionForm {
   quantity: string
   invested_amount: string
   trading_style: string
-  // 搜索选中的股票信息（新增持仓时用）
+  // 鎼滅储閫変腑鐨勮偂绁ㄤ俊鎭紙鏂板鎸佷粨鏃剁敤锛?
   stock_symbol: string
   stock_name: string
   stock_market: string
 }
 
-// 股票建议信息（来自盘中监控 API）
+// 鑲＄エ寤鸿淇℃伅锛堟潵鑷洏涓洃鎺?API锛?
 interface StockSuggestionData {
   symbol: string
   suggestion: SuggestionInfo | null
   kline: KlineSummary | null
 }
 
-// 建议池中的建议（包含来源和时间信息）
+// 寤鸿姹犱腑鐨勫缓璁紙鍖呭惈鏉ユ簮鍜屾椂闂翠俊鎭級
 interface PoolSuggestion {
   id: number
   stock_symbol: string
@@ -207,12 +216,6 @@ interface NewsItem {
   url: string
 }
 
-interface PriceAlertRuleSummary {
-  stock_symbol: string
-  market: string
-  enabled: boolean
-}
-
 const emptyStockForm: StockForm = { symbol: '', name: '', market: 'CN' }
 const emptyAccountForm: AccountForm = { name: '', available_funds: '0' }
 
@@ -223,9 +226,6 @@ const mergePortfolioQuotes = (
   quotes: Record<string, { current_price: number | null; change_pct: number | null }>
 ): PortfolioSummary | null => {
   if (!portfolio) return null
-
-  const hkdRate = portfolio.exchange_rates?.HKD_CNY ?? 0.92
-  const usdRate = portfolio.exchange_rates?.USD_CNY ?? 7.25
 
   let grandMarketValue = 0
   let grandCost = 0
@@ -239,9 +239,10 @@ const mergePortfolioQuotes = (
       const quote = quotes[`${pos.market}:${pos.symbol}`]
       const current_price = quote?.current_price ?? pos.current_price ?? null
       const change_pct = quote?.change_pct ?? pos.change_pct ?? null
-      const rate = pos.market === 'HK' ? hkdRate : pos.market === 'US' ? usdRate : 1
+      const rate = 1
+      const multiplier = pos.contract_multiplier ?? 1
 
-      const cost = pos.cost_price * pos.quantity * rate
+      const cost = pos.cost_price * pos.quantity * multiplier * rate
       accCost += cost
 
       let market_value: number | null = null
@@ -250,7 +251,7 @@ const mergePortfolioQuotes = (
       let pnl_pct: number | null = null
 
       if (current_price != null) {
-        market_value = current_price * pos.quantity
+        market_value = current_price * pos.quantity * multiplier
         market_value_cny = market_value * rate
         accMarketValue += market_value_cny
         pnl = market_value_cny - cost
@@ -266,7 +267,7 @@ const mergePortfolioQuotes = (
         market_value_cny,
         pnl,
         pnl_pct,
-        exchange_rate: pos.market === 'HK' || pos.market === 'US' ? rate : null,
+        exchange_rate: null,
       }
     })
 
@@ -313,21 +314,18 @@ export default function StocksPage() {
   const [agents, setAgents] = useState<AgentConfig[]>([])
   const [services, setServices] = useState<AIService[]>([])
   const [channels, setChannels] = useState<NotifyChannel[]>([])
-  const [loading, setLoading] = useState(true)
 
   // Portfolio
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null)
   const [portfolioRaw, setPortfolioRaw] = useState<PortfolioSummary | null>(null)
-  const [portfolioLoading, setPortfolioLoading] = useState(false)
   const [expandedAccounts, setExpandedAccounts] = useState<Set<number>>(new Set())
 
   // Quotes for all stocks (used in stock list)
   const [quotes, setQuotes] = useState<Record<string, { current_price: number | null; change_pct: number | null }>>({})
-  const [quotesLoading, setQuotesLoading] = useState(false)
   // Keyed by `${market}:${symbol}` to avoid cross-market symbol collisions
   const [klineSummaries, setKlineSummaries] = useState<Record<string, KlineSummary>>({})
 
-  // Auto-refresh (持久化到 localStorage)
+  // Auto-refresh (鎸佷箙鍖栧埌 localStorage)
   const [autoRefresh, setAutoRefresh] = useLocalStorage('panwatch_stocks_autoRefresh', false)
   const [refreshInterval, setRefreshInterval] = useLocalStorage('panwatch_stocks_refreshInterval', 30)
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(null)
@@ -343,12 +341,11 @@ export default function StocksPage() {
   const [suggestions] = useState<Record<string, StockSuggestionData>>({})
   // 建议池建议（来自 /suggestions API）
   const [poolSuggestions, setPoolSuggestions] = useState<Record<string, PoolSuggestion>>({})
-  const [poolSuggestionsLoading, setPoolSuggestionsLoading] = useState(false)
   const [priceAlertSummaryMap, setPriceAlertSummaryMap] = useState<Record<string, { total: number; enabled: number }>>({})
 
   // News Dialog
   const [newsDialogOpen, setNewsDialogOpen] = useState(false)
-  const [newsDialogSymbol, setNewsDialogSymbol] = useState<string>('')  // 空=全部, 否则=指定股票
+  const [newsDialogSymbol, setNewsDialogSymbol] = useState<string>('')  // 绌?鍏ㄩ儴, 鍚﹀垯=鎸囧畾鑲＄エ
   const [news, setNews] = useState<NewsItem[]>([])
   const [newsLoading, setNewsLoading] = useState(false)
 
@@ -367,14 +364,22 @@ export default function StocksPage() {
 
   // Market status
   const [marketStatus, setMarketStatus] = useState<MarketStatus[]>([])
-  // Guard to prevent overlapping K线刷新任务导致实际并发超限
-  const klineRefreshInFlight = useRef<Promise<void> | null>(null)
+  const workspaceQuery = useQuery({
+    queryKey: ['stocks-workspace'],
+    queryFn: () => stocksApi.workspace(),
+    staleTime: 15_000,
+  })
+  const loading = workspaceQuery.isLoading
+  const portfolioLoading = workspaceQuery.isLoading
+  const quotesLoading = workspaceQuery.isFetching
+  const poolSuggestionsLoading = workspaceQuery.isLoading
+  const refetchWorkspaceQuery = workspaceQuery.refetch
 
   // Stock form
   const [showStockForm, setShowStockForm] = useState(false)
   const [stockForm, setStockForm] = useState<StockForm>(emptyStockForm)
   const [searchQuery, setSearchQuery] = useState('')
-  const [searchMarket, setSearchMarket] = useState('')  // 搜索市场筛选
+  const [searchMarket, setSearchMarket] = useState('')  // 鎼滅储甯傚満绛涢€?
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
   const [searching, setSearching] = useState(false)
@@ -391,7 +396,7 @@ export default function StocksPage() {
   const [editPositionId, setEditPositionId] = useState<number | null>(null)
   const [positionDialogAccountId, setPositionDialogAccountId] = useState<number | null>(null)
   const [positionSearchQuery, setPositionSearchQuery] = useState('')
-  const [positionSearchMarket, setPositionSearchMarket] = useState('')  // 搜索市场筛选
+  const [positionSearchMarket, setPositionSearchMarket] = useState('')  // 鎼滅储甯傚満绛涢€?
   const [positionSearchResults, setPositionSearchResults] = useState<SearchResult[]>([])
   const [positionSearching, setPositionSearching] = useState(false)
   const [showPositionDropdown, setShowPositionDropdown] = useState(false)
@@ -403,12 +408,12 @@ export default function StocksPage() {
   const [triggeringAgent, setTriggeringAgent] = useState<string | null>(null)
   const [schedulePreviewCache, setSchedulePreviewCache] = useState<Record<string, SchedulePreview | { error: string }>>({})
   const [schedulePreviewLoading, setSchedulePreviewLoading] = useState<Record<string, boolean>>({})
-  // 运行中的单只股票 Agent（按股票标记具体 Agent 名称）
+  // 杩愯涓殑鍗曞彧鑲＄エ Agent锛堟寜鑲＄エ鏍囪鍏蜂綋 Agent 鍚嶇О锛?
   const [runningAgents, setRunningAgents] = useState<Record<number, string | null>>({})
   const [agentResultDialog, setAgentResultDialog] = useState<{ title: string; content: string; should_alert: boolean; notified: boolean } | null>(null)
 
   // Stock list filter
-  const [stockListFilter, setStockListFilter] = useState('')  // '' = 全部, 'CN' = A股, 'HK' = 港股, 'US' = 美股
+  const [stockListFilter, setStockListFilter] = useState('')  // '' = 鍏ㄩ儴
   const [watchlistOnlyAlerts, setWatchlistOnlyAlerts] = useLocalStorage<boolean>('panwatch_watchlist_only_alerts', false)
 
   // Remove watchlist modal
@@ -504,7 +509,7 @@ export default function StocksPage() {
   const searchTimer = useRef<ReturnType<typeof setTimeout>>()
   const dropdownRef = useRef<HTMLDivElement>(null)
 
-  // 非核心数据后台加载（不阻塞 UI）
+  // 闈炴牳蹇冩暟鎹悗鍙板姞杞斤紙涓嶉樆濉?UI锛?
   const loadConfigAsync = async () => {
     try {
       const [agentData, servicesData, channelsData] = await Promise.all([
@@ -520,187 +525,76 @@ export default function StocksPage() {
     }
   }
 
-  const load = async () => {
-    try {
-      // 核心数据（立即需要）
-      const [stockData, accountData] = await Promise.all([
-        fetchAPI<Stock[]>('/stocks'),
-        fetchAPI<Account[]>('/accounts'),
-      ])
-      setStocks(stockData)
-      setAccounts(accountData)
-      // 默认展开所有账户
-      setExpandedAccounts(new Set(accountData.map((a: Account) => a.id)))
-    } catch (e) {
-      console.error(e)
-    } finally {
-      setLoading(false)  // 提前解除阻塞
-    }
-
-    // 非核心数据（后台加载，不阻塞 UI）
+  useEffect(() => {
     loadConfigAsync()
+  }, [])
 
-    // 市场状态（非核心，失败不影响页面）
-    try {
-      const marketStatusData = await fetchAPI<MarketStatus[]>('/stocks/markets/status')
-      setMarketStatus(marketStatusData)
-    } catch (e) {
-      console.warn('获取市场状态失败:', e)
-    }
-  }
-
-  const loadPortfolio = async () => {
-    setPortfolioLoading(true)
-    try {
-      // 核心数据：仅本地账户/持仓
-      const portfolioData = await fetchAPI<PortfolioSummary>('/portfolio/summary?include_quotes=false')
-      setPortfolioRaw(portfolioData)
-      setPortfolio(mergePortfolioQuotes(portfolioData, quotes))
-
-      // 市场状态（非核心，失败不影响页面）
-      try {
-        const marketStatusData = await fetchAPI<MarketStatus[]>('/stocks/markets/status')
-        setMarketStatus(marketStatusData)
-      } catch (e) {
-        console.warn('获取市场状态失败:', e)
+  useEffect(() => {
+    if (!workspaceQuery.data) return
+    const data = workspaceQuery.data
+    setStocks((data.stocks || []) as Stock[])
+    setAccounts((data.accounts || []) as Account[])
+    setMarketStatus((data.market_status || []) as MarketStatus[])
+    setQuotes(data.quotes || {})
+    setPortfolioRaw((data.portfolio || null) as PortfolioSummary | null)
+    setPortfolio(mergePortfolioQuotes((data.portfolio || null) as PortfolioSummary | null, data.quotes || {}))
+    setKlineSummaries((data.kline_summaries || {}) as Record<string, KlineSummary>)
+    setPoolSuggestions((data.pool_suggestions || {}) as Record<string, PoolSuggestion>)
+    setPriceAlertSummaryMap(data.price_alert_summaries || {})
+    setExpandedAccounts(prev => {
+      const ids = new Set((data.accounts || []).map(account => Number(account.id)))
+      if (prev.size === 0) return ids
+      const next = new Set<number>()
+      for (const id of prev) {
+        if (ids.has(id)) next.add(id)
       }
+      return next.size > 0 ? next : ids
+    })
+    if (workspaceQuery.dataUpdatedAt > 0) {
+      setLastRefreshTime(new Date(workspaceQuery.dataUpdatedAt))
+    }
+  }, [workspaceQuery.data, workspaceQuery.dataUpdatedAt])
+
+  const refreshWorkspace = useCallback(async (markRefresh = true) => {
+    const result = await refetchWorkspaceQuery()
+    if (result.error) throw result.error
+    if (markRefresh) {
+      setLastRefreshTime(new Date())
+    }
+    return result.data
+  }, [refetchWorkspaceQuery])
+
+  const load = useCallback(async () => {
+    try {
+      await refreshWorkspace(false)
     } catch (e) {
       console.error(e)
-    } finally {
-      setPortfolioLoading(false)
     }
-  }
+  }, [refreshWorkspace])
 
-  const buildQuoteItems = useCallback((): QuoteRequestItem[] => {
-    const items: QuoteRequestItem[] = []
-    const seen = new Set<string>()
-
-    for (const stock of stocks) {
-      const key = `${stock.market}:${stock.symbol}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      items.push({ symbol: stock.symbol, market: stock.market })
-    }
-
-    for (const account of portfolioRaw?.accounts || []) {
-      for (const pos of account.positions) {
-        const key = `${pos.market}:${pos.symbol}`
-        if (seen.has(key)) continue
-        seen.add(key)
-        items.push({ symbol: pos.symbol, market: pos.market })
-      }
-    }
-
-    return items
-  }, [stocks, portfolioRaw])
-
-  const refreshQuotes = useCallback(async () => {
-    const items = buildQuoteItems()
-    if (items.length === 0) return
-
-    setQuotesLoading(true)
+  const loadPortfolio = useCallback(async () => {
     try {
-      const data = await fetchAPI<QuoteResponse[]>('/quotes/batch', {
-        method: 'POST',
-        body: JSON.stringify({ items }),
-      })
-      const map: Record<string, { current_price: number | null; change_pct: number | null }> = {}
-      for (const item of data) {
-        map[`${item.market}:${item.symbol}`] = {
-          current_price: item.current_price ?? null,
-          change_pct: item.change_pct ?? null,
-        }
-      }
-      setQuotes(map)
-      setLastRefreshTime(new Date())
+      await refreshWorkspace(false)
     } catch (e) {
-      console.warn('刷新行情失败:', e)
-    } finally {
-      setQuotesLoading(false)
+      console.error(e)
     }
-  }, [buildQuoteItems])
-
-  useEffect(() => {
-    if (!portfolioRaw) return
-    setPortfolio(mergePortfolioQuotes(portfolioRaw, quotes))
-  }, [portfolioRaw, quotes])
-
-  useEffect(() => {
-    if (stocks.length === 0 && (!portfolioRaw || portfolioRaw.accounts.length === 0)) return
-    refreshQuotes()
-    // 刷新 K 线摘要（用于常驻评分徽章）
-    ;(async () => {
-      try { await refreshKlines() } catch {}
-    })()
-  }, [stocks, portfolioRaw, refreshQuotes])
-
-  // 刷新 K 线摘要（并发受限的单个请求，避免批量接口慢）；并防止重入
-  const refreshKlines = useCallback(async () => {
-    if (klineRefreshInFlight.current) return klineRefreshInFlight.current
-    const run = (async () => {
-      const items = buildQuoteItems()
-      if (items.length === 0) return
-      const limit = 5
-      const map: Record<string, KlineSummary> = {}
-      let idx = 0
-      const worker = async () => {
-        while (idx < items.length) {
-          const i = idx++
-          const it = items[i]
-          try {
-            const res = await fetchAPI<{ symbol: string; market: string; summary: KlineSummary }>(`/klines/${encodeURIComponent(it.symbol)}/summary?market=${encodeURIComponent(it.market)}`)
-            if (res && (res as any).summary) {
-              map[`${it.market}:${it.symbol}`] = (res as any).summary as KlineSummary
-            }
-          } catch {
-            // ignore single failure
-          }
-        }
-      }
-      await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()))
-      // 增量合并：本轮单只失败时保留旧值，避免技术徽章闪断/消失
-      setKlineSummaries(prev => ({ ...prev, ...map }))
-    })()
-    klineRefreshInFlight.current = run
-    try { await run } finally { klineRefreshInFlight.current = null }
-  }, [buildQuoteItems])
-
-  // 从建议池加载建议（包含历史建议和多来源建议）
-  const loadPoolSuggestions = useCallback(async () => {
-    setPoolSuggestionsLoading(true)
-    try {
-      const data = await fetchAPI<Record<string, PoolSuggestion>>('/suggestions?include_expired=true')
-      setPoolSuggestions(data)
-    } catch (e) {
-      console.warn('加载建议池失败:', e)
-    } finally {
-      setPoolSuggestionsLoading(false)
-    }
-  }, [])
+  }, [refreshWorkspace])
 
   const loadPriceAlertSummaries = useCallback(async () => {
     try {
-      const rows = await fetchAPI<PriceAlertRuleSummary[]>('/price-alerts')
-      const map: Record<string, { total: number; enabled: number }> = {}
-      for (const r of rows || []) {
-        const key = `${String(r.market || 'CN').toUpperCase()}:${String(r.stock_symbol || '').toUpperCase()}`
-        if (!map[key]) map[key] = { total: 0, enabled: 0 }
-        map[key].total += 1
-        if (r.enabled) map[key].enabled += 1
-      }
-      setPriceAlertSummaryMap(map)
+      await refreshWorkspace(false)
     } catch (e) {
       console.warn('加载提醒摘要失败:', e)
     }
-  }, [])
+  }, [refreshWorkspace])
 
   // Load news for specific stock or all watchlist
   const loadNews = useCallback(async (stockName?: string) => {
     setNewsLoading(true)
     try {
-      const params = new URLSearchParams({ hours: '168', limit: '50' })  // 7天
+      const params = new URLSearchParams({ hours: '168', limit: '50' })  // 7澶?
       if (stockName) {
-        // 直接传递股票名称，比代码更稳定
+        // 鐩存帴浼犻€掕偂绁ㄥ悕绉帮紝姣斾唬鐮佹洿绋冲畾
         params.set('names', stockName)
       }
       const newsData = await fetchAPI<NewsItem[]>(`/news?${params}`)
@@ -724,7 +618,7 @@ export default function StocksPage() {
 
   // Open news dialog - pass stock name for more stable search
   const openNewsDialog = useCallback((stockName?: string) => {
-    setNewsDialogSymbol(stockName || '')  // 存储名称用于 UI 显示
+    setNewsDialogSymbol(stockName || '')  // 瀛樺偍鍚嶇О鐢ㄤ簬 UI 鏄剧ず
     setNewsDialogOpen(true)
     loadNews(stockName)
   }, [loadNews])
@@ -762,45 +656,14 @@ export default function StocksPage() {
 
   // Refresh quotes only (decoupled from portfolio and scans)
   const handleRefresh = useCallback(async () => {
-    await Promise.all([
-      refreshQuotes(),
-      loadPoolSuggestions(),
-      refreshKlines(),
-    ])
-  }, [refreshQuotes, loadPoolSuggestions, refreshKlines])
-
-  useEffect(() => { load(); loadPortfolio(); loadPoolSuggestions(); loadPriceAlertSummaries(); refreshKlines() }, [])
-
-  // 仅关注列表场景（无持仓）也要在列表加载后预取 K 线摘要，保证技术指标徽章可见
-  const watchlistKlineInitDone = useRef(false)
-  const klineMissingRetryRef = useRef<Record<string, number>>({})
-  useEffect(() => {
-    if (watchlistKlineInitDone.current) return
-    if (!stocks || stocks.length === 0) return
-    watchlistKlineInitDone.current = true
-    refreshKlines()
-  }, [stocks, refreshKlines])
-
-  // 关注列表变更后，自动补齐缺失的 K 线摘要（避免未配置 agent 时没有技术指标徽章）
-  useEffect(() => {
-    if (!stocks || stocks.length === 0) return
-    const now = Date.now()
-    const retryGapMs = 2 * 60 * 1000
-    const missing = stocks.filter(s => {
-      const key = `${s.market || 'CN'}:${s.symbol}`
-      if (klineSummaries[key]) return false
-      const lastTry = klineMissingRetryRef.current[key] || 0
-      return (now - lastTry) > retryGapMs
-    })
-    if (missing.length === 0) return
-    for (const s of missing) {
-      const key = `${s.market || 'CN'}:${s.symbol}`
-      klineMissingRetryRef.current[key] = now
+    try {
+      await refreshWorkspace()
+    } catch (e) {
+      console.warn('刷新持仓工作台失败:', e)
     }
-    refreshKlines()
-  }, [stocks, klineSummaries, refreshKlines])
+  }, [refreshWorkspace])
 
-  // Agent 配置弹窗：预览未来触发时间（用于自检工作日/周末语义）
+  // Agent 调度预览：进入弹窗后按有效 schedule 拉取未来触发时间。
   useEffect(() => {
     if (!agentDialogStock) return
     if (!agents || agents.length === 0) return
@@ -851,43 +714,27 @@ export default function StocksPage() {
     return () => { cancelled = true }
   }, [agentDialogStock, agents, schedulePreviewCache, schedulePreviewLoading])
 
-  // 触发扫描：调用盘中监控扫描，并刷新建议池
+  // 瑙﹀彂鎵弿锛氳皟鐢ㄧ洏涓洃鎺ф壂鎻忥紝骞跺埛鏂板缓璁睜
   const scanAndReload = useCallback(async () => {
     setScanning(true)
     try {
       const url = '/agents/intraday/scan?analyze=true'
       await fetchAPI(url, { method: 'POST' })
-      await loadPoolSuggestions()
-      await refreshKlines()
-      setLastRefreshTime(new Date())
+      await refreshWorkspace()
     } catch (e) {
       console.error('扫描失败:', e)
       toast(e instanceof Error ? e.message : '扫描失败', 'error')
     } finally {
       setScanning(false)
     }
-  }, [loadPoolSuggestions, refreshKlines, toast])
-
-  // 首次加载后，按需刷新 K 线摘要与建议池
-  const initialKlineDone = useRef(false)
-  useEffect(() => {
-    if (portfolio && portfolio.accounts.length > 0 && !initialKlineDone.current) {
-      initialKlineDone.current = true
-      refreshKlines()
-      loadPoolSuggestions()
-    }
-  }, [portfolio, refreshKlines, loadPoolSuggestions])
+  }, [refreshWorkspace, toast])
 
   // Auto-refresh timer
   useEffect(() => {
     if (autoRefresh) {
-      refreshQuotes()
-      refreshKlines()
-      loadPoolSuggestions()
+      refreshWorkspace().catch(() => {})
       refreshTimerRef.current = setInterval(() => {
-        refreshQuotes()
-        refreshKlines()
-        loadPoolSuggestions()
+        refreshWorkspace().catch(() => {})
       }, refreshInterval * 1000)
     } else {
       // Clear interval when disabled
@@ -902,7 +749,7 @@ export default function StocksPage() {
         clearInterval(refreshTimerRef.current)
       }
     }
-  }, [autoRefresh, refreshInterval, refreshQuotes, refreshKlines])
+  }, [autoRefresh, refreshInterval, refreshWorkspace])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -997,7 +844,7 @@ export default function StocksPage() {
       toast('股票已删除', 'success')
       setRemoveWatchStock(null)
       load()
-      // 价格提醒/关联配置会随股票删除，刷新一次避免 UI 残留。
+      // 浠锋牸鎻愰啋/鍏宠仈閰嶇疆浼氶殢鑲＄エ鍒犻櫎锛屽埛鏂颁竴娆￠伩鍏?UI 娈嬬暀銆?
       loadPortfolio()
     } catch (e) {
       toast(e instanceof Error ? e.message : '删除失败', 'error')
@@ -1039,7 +886,7 @@ export default function StocksPage() {
   }
 
   const handleDeleteAccount = async (id: number) => {
-    if (!confirm('确定删除该账户？这将同时删除该账户的所有持仓记录')) return
+    if (!confirm('确定删除该账户？这将同时删除该账户的所有持仓记录。')) return
     try {
       await fetchAPI(`/accounts/${id}`, { method: 'DELETE' })
       load()
@@ -1112,7 +959,7 @@ export default function StocksPage() {
   }
 
   const selectPositionStock = (item: SearchResult) => {
-    // 检查是否已有此股票
+    // 妫€鏌ユ槸鍚﹀凡鏈夋鑲＄エ
     const existing = stocks.find(s => s.symbol === item.symbol && s.market === item.market)
     setPositionForm({
       ...positionForm,
@@ -1129,7 +976,7 @@ export default function StocksPage() {
     try {
       let stockId = positionForm.stock_id
 
-      // 如果是新增且股票不在自选中，先添加到自选
+      // 濡傛灉鏄柊澧炰笖鑲＄エ涓嶅湪鑷€変腑锛屽厛娣诲姞鍒拌嚜閫?
       if (!editPositionId && !stockId && positionForm.stock_symbol) {
         try {
           const newStock = await fetchAPI<Stock>('/stocks', {
@@ -1141,9 +988,9 @@ export default function StocksPage() {
             })
           })
           stockId = newStock.id
-          load() // 刷新股票列表
+          load() // 鍒锋柊鑲＄エ鍒楄〃
         } catch {
-          // 股票可能已存在，尝试获取（兼容并发创建/历史数据）。
+          // 鑲＄エ鍙兘宸插瓨鍦紝灏濊瘯鑾峰彇锛堝吋瀹瑰苟鍙戝垱寤?鍘嗗彶鏁版嵁锛夈€?
           try {
             const existingStocks = await fetchAPI<Stock[]>('/stocks')
             const existing = existingStocks.find(s => s.symbol === positionForm.stock_symbol && s.market === positionForm.stock_market)
@@ -1166,7 +1013,7 @@ export default function StocksPage() {
         cost_price: parseFloat(positionForm.cost_price),
         quantity: parseInt(positionForm.quantity),
         invested_amount: positionForm.invested_amount ? parseFloat(positionForm.invested_amount) : null,
-        trading_style: positionForm.trading_style,  // 空字符串表示清空
+        trading_style: positionForm.trading_style,  // 绌哄瓧绗︿覆琛ㄧず娓呯┖
       }
       if (editPositionId) {
         await fetchAPI(`/positions/${editPositionId}`, { method: 'PUT', body: JSON.stringify(payload) })
@@ -1211,17 +1058,17 @@ export default function StocksPage() {
   const triggerStockAgent = async (stockId: number, agentName: string) => {
     setTriggeringAgent(agentName)
     setRunningAgents(prev => ({ ...prev, [stockId]: agentName }))
-    // 触发后立即关闭配置弹窗，避免多层弹窗干扰
+    // 瑙﹀彂鍚庣珛鍗冲叧闂厤缃脊绐楋紝閬垮厤澶氬眰寮圭獥骞叉壈
     setAgentDialogStock(null)
     try {
-      // 手动触发时跳过节流，方便测试
+      // 鎵嬪姩瑙﹀彂鏃惰烦杩囪妭娴侊紝鏂逛究娴嬭瘯
       const resp = await fetchAPI<{ result: AgentResult; success?: boolean; message?: string }>(
         `/stocks/${stockId}/agents/${agentName}/trigger?bypass_throttle=true`,
         { method: 'POST' }
       )
       const result = resp?.result
       if (result) {
-        // 仅提示，不再弹出结果弹窗，避免干扰
+        // 浠呮彁绀猴紝涓嶅啀寮瑰嚭缁撴灉寮圭獥锛岄伩鍏嶅共鎵?
         if (result.success === false) {
           toast(result.message || result.content || '执行未通过', 'info')
           return
@@ -1298,23 +1145,30 @@ export default function StocksPage() {
     return value.toFixed(2)
   }
 
-  const marketLabel = (m: string) => m === 'CN' ? 'A股' : m === 'HK' ? '港股' : m === 'US' ? '美股' : m
+  const marketLabel = (m: string) =>
+    m === 'CN'
+      ? 'A股'
+      : m === 'CN_FUT'
+        ? '期货'
+        : m === 'CN_OPT'
+          ? '期权'
+          : m
 
-  // 市场徽章样式和短标签
+  // 甯傚満寰界珷鏍峰紡鍜岀煭鏍囩
   const marketBadge = (m: string) => {
-    if (m === 'HK') return { style: 'bg-orange-500/10 text-orange-600', label: '港' }
-    if (m === 'US') return { style: 'bg-green-500/10 text-green-600', label: '美' }
+    if (m === 'CN_FUT') return { style: 'bg-amber-500/10 text-amber-700', label: '期' }
+    if (m === 'CN_OPT') return { style: 'bg-fuchsia-500/10 text-fuchsia-700', label: '权' }
     return { style: 'bg-blue-500/10 text-blue-600', label: 'A' }
   }
 
-  // 保留原始精度显示价格（不强制截断小数位）
+  // 淇濈暀鍘熷绮惧害鏄剧ず浠锋牸锛堜笉寮哄埗鎴柇灏忔暟浣嶏級
   const formatPrice = (value: number) => {
-    // 最多显示4位小数，去除末尾的0
+    // 鏈€澶氭樉绀?浣嶅皬鏁帮紝鍘婚櫎鏈熬鐨?
     const formatted = value.toFixed(4).replace(/\.?0+$/, '')
     return formatted
   }
 
-  // 获取股票的行情信息
+  // 鑾峰彇鑲＄エ鐨勮鎯呬俊鎭?
   const getStockQuote = (quoteKey: string) => {
     return quotes[quoteKey] || null
   }
@@ -1324,10 +1178,10 @@ export default function StocksPage() {
     return priceAlertSummaryMap[key] || { total: 0, enabled: 0 }
   }
 
-  // 获取股票的建议信息（优先使用建议池，包含来源和时间信息）
+  // 鑾峰彇鑲＄エ鐨勫缓璁俊鎭紙浼樺厛浣跨敤寤鸿姹狅紝鍖呭惈鏉ユ簮鍜屾椂闂翠俊鎭級
   const getSuggestionForStock = (symbol: string, market: string, hasPosition?: boolean): { suggestion: SuggestionInfo | null; kline: KlineSummary | null } => {
     const key = `${market || 'CN'}:${symbol}`
-    // 优先使用建议池的建议（包含来源和时间信息）
+    // 浼樺厛浣跨敤寤鸿姹犵殑寤鸿锛堝寘鍚潵婧愬拰鏃堕棿淇℃伅锛?
     const poolSug =
       poolSuggestions[key] ||
       (() => {
@@ -1354,12 +1208,12 @@ export default function StocksPage() {
           ai_response: poolSug.ai_response,
           meta: poolSug.meta,
         },
-        // 优先使用本页并发预取的 kline 摘要，确保徽章与弹窗一致且免加载
+        // 浼樺厛浣跨敤鏈〉骞跺彂棰勫彇鐨?kline 鎽樿锛岀‘淇濆窘绔犱笌寮圭獥涓€鑷翠笖鍏嶅姞杞?
         kline: preloadedKline,
       }
     }
 
-    // 无池建议时，使用 K 线评分构建轻量建议（仅用于徽章展示）
+    // 鏃犳睜寤鸿鏃讹紝浣跨敤 K 绾胯瘎鍒嗘瀯寤鸿交閲忓缓璁紙浠呯敤浜庡窘绔犲睍绀猴級
     const ks = klineSummaries[key]
     if (ks) {
       const scored = buildKlineSuggestion(ks as any, hasPosition)
@@ -1404,7 +1258,7 @@ export default function StocksPage() {
     })
   }
 
-  // 骨架屏：初始加载时显示
+  // 楠ㄦ灦灞忥細鍒濆鍔犺浇鏃舵樉绀?
   if (loading) {
     return (
       <div>
@@ -1595,7 +1449,7 @@ export default function StocksPage() {
 
       {/* Portfolio Total Summary */}
       {portfolioLoading && !portfolio ? (
-        // 首次加载时显示骨架屏
+        // 棣栨鍔犺浇鏃舵樉绀洪鏋跺睆
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {[...Array(4)].map((_, i) => (
             <div key={i} className="card p-4">
@@ -1643,7 +1497,7 @@ export default function StocksPage() {
               if (p.current_price_cny == null || p.change_pct == null) continue
               const prev = p.change_pct === -100 ? null : (p.current_price_cny / (1 + p.change_pct / 100))
               if (prev == null || !isFinite(prev)) continue
-              const qty = p.quantity || 0
+              const qty = (p.quantity || 0) * (p.contract_multiplier ?? 1)
               dayPnl += (p.current_price_cny - prev) * qty
               prevMv += prev * qty
             }
@@ -1667,11 +1521,11 @@ export default function StocksPage() {
             )
           })()}
 
-          <div className="card p-4">
-            <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <Wallet className="w-4 h-4" />
-              <span className="text-[12px]">可用资金</span>
-            </div>
+            <div className="card p-4">
+              <div className="flex items-center gap-2 text-muted-foreground mb-1">
+                <Wallet className="w-4 h-4" />
+                <span className="text-[12px]">可用资金</span>
+              </div>
             <div className="text-[20px] font-bold text-foreground font-mono">
               {formatMoney(portfolio.total.available_funds)}
             </div>
@@ -1695,7 +1549,7 @@ export default function StocksPage() {
               {positionRatio ? `${positionRatio.pct.toFixed(1)}%` : '--'}
             </div>
             <div className="mt-1 text-[11px] text-muted-foreground line-clamp-1">
-              {positionRatio ? `持仓市值 ${formatMoney(positionRatio.mv)} / 总资产 ${formatMoney(positionRatio.assets)}` : '—'}
+              {positionRatio ? `持仓市值 ${formatMoney(positionRatio.mv)} / 总资产 ${formatMoney(positionRatio.assets)}` : '--'}
             </div>
           </div>
         </div>
@@ -1722,7 +1576,7 @@ export default function StocksPage() {
                 : 'text-muted-foreground hover:text-foreground'
             }`}
           >
-            关注 <span className="ml-1 font-mono text-[11px] opacity-70">{watchlistCount}</span>
+            关注列表 <span className="ml-1 font-mono text-[11px] opacity-70">{watchlistCount}</span>
           </button>
         </div>
       </div>
@@ -1741,7 +1595,7 @@ export default function StocksPage() {
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>添加股票到自选</DialogTitle>
-            <DialogDescription>搜索并添加到自选股列表</DialogDescription>
+            <DialogDescription>搜索并添加到自选列表</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleStockSubmit}>
             <div className="relative" ref={dropdownRef}>
@@ -1751,8 +1605,6 @@ export default function StocksPage() {
                   {[
                     { value: '', label: '全部' },
                     { value: 'CN', label: 'A股' },
-                    { value: 'HK', label: '港股' },
-                    { value: 'US', label: '美股' },
                   ].map(opt => (
                     <button
                       key={opt.value}
@@ -1792,7 +1644,7 @@ export default function StocksPage() {
                   value={searchQuery}
                   onChange={e => handleSearchInput(e.target.value)}
                   onFocus={() => searchResults.length > 0 && setShowDropdown(true)}
-                  placeholder={searchMarket === 'HK' ? '代码或名称，如 00700 或 腾讯' : searchMarket === 'US' ? '代码或名称，如 AAPL 或 苹果' : '代码或名称，如 600519 或 茅台'}
+                  placeholder="代码或名称，如 600519 或 茅台"
                   className="pl-10"
                   autoComplete="off"
                 />
@@ -1850,7 +1702,7 @@ export default function StocksPage() {
             </div>
             <p className="text-[15px] font-semibold text-foreground">还没有账户</p>
             <p className="text-[13px] text-muted-foreground mt-1.5">
-              {stocks.length > 0 ? '你已有自选股，可先切换到“自选”查看' : '点击"添加账户"创建你的第一个交易账户'}
+              {stocks.length > 0 ? '你已经有自选股票，可以先切换到“自选”查看。' : '点击“添加账户”创建你的第一个交易账户。'}
             </p>
             {stocks.length > 0 && (
               <Button variant="secondary" size="sm" className="mt-4" onClick={() => setViewTab('watchlist')}>
@@ -1923,10 +1775,10 @@ export default function StocksPage() {
                         <table className="w-full">
                           <thead>
                             <tr className="border-b border-border/30 bg-accent/20">
-                              <th className="text-left px-4 py-2 text-[11px] font-semibold text-muted-foreground">股票</th>
-                              <th className="text-right px-4 py-2 text-[11px] font-semibold text-muted-foreground">现价</th>
-                              <th className="text-right px-4 py-2 text-[11px] font-semibold text-muted-foreground">涨跌</th>
-                              <th className="text-right px-4 py-2 text-[11px] font-semibold text-muted-foreground">成本</th>
+                              <th className="text-left px-4 py-2 text-[11px] font-semibold text-muted-foreground">标的</th>
+                              <th className="text-right px-4 py-2 text-[11px] font-semibold text-muted-foreground">最新价</th>
+                              <th className="text-right px-4 py-2 text-[11px] font-semibold text-muted-foreground">涨跌幅</th>
+                              <th className="text-right px-4 py-2 text-[11px] font-semibold text-muted-foreground">成本价</th>
                               <th className="text-right px-4 py-2 text-[11px] font-semibold text-muted-foreground">持仓</th>
                               <th className="text-right px-4 py-2 text-[11px] font-semibold text-muted-foreground">市值</th>
                               <th className="text-right px-4 py-2 text-[11px] font-semibold text-muted-foreground">盈亏</th>
@@ -1939,7 +1791,7 @@ export default function StocksPage() {
                             {account.positions.map((pos, i) => {
                               const stock = stocks.find(s => s.id === pos.stock_id)
                               const badge = marketBadge(pos.market)
-                              const isForeign = pos.market === 'HK' || pos.market === 'US'
+                              const isForeign = false
                               const changeColor = pos.change_pct != null
                                 ? (pos.change_pct > 0 ? 'text-rose-500' : pos.change_pct < 0 ? 'text-emerald-500' : 'text-muted-foreground')
                                 : 'text-muted-foreground'
@@ -2007,24 +1859,19 @@ export default function StocksPage() {
                                     })()}
                                   </td>
                                   <td className={`px-4 py-2.5 text-right font-mono text-[12px] ${changeColor}`}>
-                                    {pos.current_price != null ? <span>{pos.current_price.toFixed(2)}{isForeign ? (pos.market === 'HK' ? ' HKD' : ' USD') : ''}</span> : '—'}
+                                    {pos.current_price != null ? <span>{pos.current_price.toFixed(2)}</span> : '--'}
                                   </td>
                                   <td className={`px-4 py-2.5 text-right font-mono text-[12px] ${changeColor}`}>
-                                    {pos.change_pct != null ? `${pos.change_pct >= 0 ? '+' : ''}${pos.change_pct.toFixed(2)}%` : '—'}
+                                    {pos.change_pct != null ? `${pos.change_pct >= 0 ? '+' : ''}${pos.change_pct.toFixed(2)}%` : '--'}
                                   </td>
                                   <td className="px-4 py-2.5 text-right font-mono text-[12px] text-muted-foreground">{formatPrice(pos.cost_price)}</td>
                                   <td className="px-4 py-2.5 text-right font-mono text-[12px] text-muted-foreground">{pos.quantity}</td>
                                   <td className="px-4 py-2.5 text-right font-mono text-[12px] text-muted-foreground">
                                     {pos.market_value != null ? (
                                       <div className="flex flex-col items-end">
-                                        {isForeign ? (
-                                          <>
-                                            <span>{formatMoney(pos.market_value)} {pos.market === 'HK' ? 'HKD' : 'USD'}</span>
-                                            {pos.market_value_cny && <span className="text-[10px] text-muted-foreground/60">≈{formatMoney(pos.market_value_cny)}</span>}
-                                          </>
-                                        ) : <span>{formatMoney(pos.market_value)}</span>}
+                                        <span>{formatMoney(pos.market_value)}</span>
                                       </div>
-                                    ) : '—'}
+                                    ) : '--'}
                                   </td>
                                   <td className={`px-4 py-2.5 text-right font-mono text-[12px] ${pnlColor}`}>
                                     {pos.pnl != null ? (
@@ -2032,7 +1879,7 @@ export default function StocksPage() {
                                         <span>{pos.pnl >= 0 ? '+' : ''}{formatMoney(pos.pnl)}</span>
                                         <span className="text-[10px] opacity-70">{pos.pnl_pct != null ? `${pos.pnl_pct >= 0 ? '+' : ''}${pos.pnl_pct.toFixed(2)}%` : ''}{isForeign && ' CNY'}</span>
                                       </div>
-                                    ) : '—'}
+                                    ) : '--'}
                                   </td>
                                   <td className="px-4 py-2.5 text-center">
                                     {pos.trading_style ? (
@@ -2057,7 +1904,7 @@ export default function StocksPage() {
                                                   {isRunning && (
                                                     <span className="inline-flex items-center gap-1 text-[10px] text-amber-600">
                                                       <span className="w-3 h-3 border-2 border-current/30 border-t-current rounded-full animate-spin" />
-                                                      执行中
+                                                      执行中...
                                                     </span>
                                                   )}
                                                 </span>
@@ -2174,18 +2021,18 @@ export default function StocksPage() {
                                   })()}
                                 </div>
                                 <div className={`font-mono text-[13px] font-medium ${changeColor}`}>
-                                  {pos.current_price?.toFixed(2) || '—'}
+                                  {pos.current_price?.toFixed(2) || '--'}
                                   {pos.change_pct != null && <span className="text-[11px] ml-1">{pos.change_pct >= 0 ? '+' : ''}{pos.change_pct.toFixed(2)}%</span>}
                                 </div>
                               </div>
                               {/* Row 2: Details */}
                               <div className="flex items-center justify-between text-[11px]">
                                 <div className="flex items-center gap-3">
-                                  <span className="text-muted-foreground">成本 <span className="font-mono text-foreground">{formatPrice(pos.cost_price)}</span></span>
+                                  <span className="text-muted-foreground">成本价 <span className="font-mono text-foreground">{formatPrice(pos.cost_price)}</span></span>
                                   <span className="text-muted-foreground">数量 <span className="font-mono text-foreground">{pos.quantity}</span></span>
                                 </div>
                                 <div className={`font-mono ${pnlColor}`}>
-                                  {pos.pnl != null ? `${pos.pnl >= 0 ? '+' : ''}${formatMoney(pos.pnl)}` : '—'}
+                                  {pos.pnl != null ? `${pos.pnl >= 0 ? '+' : ''}${formatMoney(pos.pnl)}` : '--'}
                                   {pos.pnl_pct != null && <span className="ml-1">({pos.pnl_pct >= 0 ? '+' : ''}{pos.pnl_pct.toFixed(2)}%)</span>}
                                 </div>
                               </div>
@@ -2203,7 +2050,7 @@ export default function StocksPage() {
                                             {isRunning && (
                                               <span className="inline-flex items-center gap-1 text-[10px] text-amber-600">
                                                 <span className="w-3 h-3 border-2 border-current/30 border-t-current rounded-full animate-spin" />
-                                                执行中
+                                                执行中...
                                               </span>
                                             )}
                                           </span>
@@ -2258,8 +2105,6 @@ export default function StocksPage() {
               {[
                 { value: '', label: '全部', count: stocks.length },
                 { value: 'CN', label: 'A股', count: stocks.filter(s => s.market === 'CN').length },
-                { value: 'HK', label: '港股', count: stocks.filter(s => s.market === 'HK').length },
-                { value: 'US', label: '美股', count: stocks.filter(s => s.market === 'US').length },
               ].map(opt => (
                 <button
                   key={opt.value}
@@ -2286,7 +2131,7 @@ export default function StocksPage() {
                     ? 'bg-rose-500/10 border-rose-500/30 text-rose-600'
                     : 'bg-accent/30 border-border/50 text-muted-foreground hover:border-rose-500/30'
                 }`}
-                title="只显示需要关注/预警的股票"
+                title="只显示需要关注或预警的股票"
               >
                 仅预警
               </button>
@@ -2492,7 +2337,7 @@ export default function StocksPage() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>删除股票</DialogTitle>
-            <DialogDescription>删除后将从系统中移除该股票及其关注配置</DialogDescription>
+            <DialogDescription>删除后将从系统中移除该股票及其关联配置</DialogDescription>
           </DialogHeader>
           {removeWatchStock && (
             <div className="space-y-4 mt-2">
@@ -2503,7 +2348,7 @@ export default function StocksPage() {
                 </div>
                 <div className="mt-1 text-[12px] text-muted-foreground">
                   {hasAnyPositionForStockId(removeWatchStock.id)
-                    ? '该股票存在持仓，不能直接删除。请先在“持仓”Tab 删除持仓记录。'
+                    ? '该股票存在持仓，不能直接删除。请先在“持仓”页删除相关持仓记录。'
                     : '删除后将不再出现在关注列表，同时会清理该股票关联的价格提醒。'}
                 </div>
               </div>
@@ -2515,7 +2360,7 @@ export default function StocksPage() {
                   onClick={() => removeFromWatchlist(removeWatchStock)}
                   disabled={removingWatchStock || hasAnyPositionForStockId(removeWatchStock.id)}
                 >
-                  {hasAnyPositionForStockId(removeWatchStock.id) ? '请先删除持仓' : (removingWatchStock ? '处理中…' : '删除股票')}
+                  {hasAnyPositionForStockId(removeWatchStock.id) ? '请先删除持仓' : (removingWatchStock ? '处理中...' : '删除股票')}
                 </Button>
               </div>
             </div>
@@ -2596,8 +2441,7 @@ export default function StocksPage() {
                     {[
                       { value: '', label: '全部' },
                       { value: 'CN', label: 'A股' },
-                      { value: 'HK', label: '港股' },
-                      { value: 'US', label: '美股' },
+                      { value: 'CN_FUT', label: '期货' },
                     ].map(opt => (
                       <button
                         key={opt.value}
@@ -2620,7 +2464,7 @@ export default function StocksPage() {
                     value={positionSearchQuery}
                     onChange={e => handlePositionSearchInput(e.target.value)}
                     onFocus={() => positionSearchResults.length > 0 && setShowPositionDropdown(true)}
-                    placeholder={positionSearchMarket === 'HK' ? '代码或名称，如 00700 或 腾讯' : positionSearchMarket === 'US' ? '代码或名称，如 LI 或 理想汽车' : positionSearchMarket === 'CN' ? '代码或名称，如 600519 或 茅台' : '代码或名称，如 600519 / 00700 / AAPL'}
+                    placeholder="代码或名称，如 600519 或 茅台"
                     className="pl-9"
                     autoComplete="off"
                   />

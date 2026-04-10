@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from src.collectors.akshare_collector import _fetch_tencent_quotes, _tencent_symbol
-from src.collectors.kline_collector import KlineCollector
+from src.core.market_data import market_data
 from src.core.notifier import NotifierManager
 from src.models.market import MarketCode, MARKETS
 from src.web.database import SessionLocal
@@ -105,46 +103,17 @@ class PriceAlertEngine:
     """价格提醒扫描执行引擎（支持小规模缓存和去重）。"""
 
     def __init__(self):
-        self._quote_cache: dict[str, tuple[float, dict]] = {}
-        self._kline_cache: dict[str, tuple[float, dict]] = {}
-        self.quote_ttl_sec = 5.0
-        self.kline_ttl_sec = 60.0
+        pass
 
     async def _fetch_quotes_map(self, stocks: list[Stock]) -> dict[tuple[str, str], dict]:
-        grouped: dict[MarketCode, list[Stock]] = {}
-        for s in stocks:
-            grouped.setdefault(_to_market(s.market), []).append(s)
-
-        out: dict[tuple[str, str], dict] = {}
-        for market, items in grouped.items():
-            symbols = [s.symbol for s in items]
-            if not symbols:
-                continue
-            tencent_symbols = [_tencent_symbol(sym, market) for sym in symbols]
-            try:
-                rows = await asyncio.to_thread(_fetch_tencent_quotes, tencent_symbols)
-            except Exception as e:
-                logger.error(f"价格提醒批量拉行情失败 {market.value}: {e}")
-                rows = []
-            by_symbol = {str(r.get("symbol")): r for r in rows}
-            for sym in symbols:
-                q = by_symbol.get(sym)
-                if q:
-                    out[(market.value, sym)] = q
-        return out
+        items = [
+            {"symbol": stock.symbol, "market": _to_market(stock.market).value}
+            for stock in stocks
+        ]
+        return await asyncio.to_thread(market_data.get_quotes_map, items)
 
     async def _get_kline_summary_cached(self, market: MarketCode, symbol: str) -> dict:
-        key = f"{market.value}:{symbol}"
-        now = time.monotonic()
-        cached = self._kline_cache.get(key)
-        if cached and now - cached[0] < self.kline_ttl_sec:
-            return cached[1]
-        try:
-            summary = await asyncio.to_thread(KlineCollector(market).get_kline_summary, symbol)
-        except Exception:
-            summary = {}
-        self._kline_cache[key] = (now, summary or {})
-        return summary or {}
+        return await asyncio.to_thread(market_data.get_kline_summary, symbol, market)
 
     async def _eval_condition(
         self,

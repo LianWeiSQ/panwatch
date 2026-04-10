@@ -1,9 +1,13 @@
-"""股票列表缓存与模糊搜索"""
+"""CN stock list cache and search helpers."""
+
+from __future__ import annotations
+
+import concurrent.futures
 import json
+import logging
 import os
 import time
-import logging
-import concurrent.futures
+import urllib.parse
 
 import httpx
 
@@ -11,11 +15,17 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 CACHE_FILE = os.path.join(DATA_DIR, "stock_list_cache.json")
-CACHE_TTL = 86400 * 7  # 7 days
+CACHE_TTL = 86400 * 7
+PAGE_SIZE = 100
 
-# 东方财富 A 股（使用 push2delay 域名，避免重定向）
-EASTMONEY_URL = "http://80.push2delay.eastmoney.com/api/qt/clist/get"
-EASTMONEY_PARAMS = {
+EASTMONEY_URL = "https://80.push2delay.eastmoney.com/api/qt/clist/get"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://quote.eastmoney.com/",
+}
+
+CN_PARAMS = {
     "po": "1",
     "np": "1",
     "fltt": "2",
@@ -25,427 +35,259 @@ EASTMONEY_PARAMS = {
     "fields": "f12,f14",
 }
 
-# 东方财富港股参数
-EASTMONEY_HK_PARAMS = {
+BJ_PARAMS = {
     "po": "1",
     "np": "1",
     "fltt": "2",
     "invt": "2",
     "fid": "f12",
-    "fs": "m:128+t:3,m:128+t:4,m:128+t:1,m:128+t:2",  # 港股主板、创业板等
+    "fs": "m:0+t:81",
     "fields": "f12,f14",
 }
-
-# 东方财富美股参数
-EASTMONEY_US_PARAMS = {
-    "po": "1",
-    "np": "1",
-    "fltt": "2",
-    "invt": "2",
-    "fid": "f12",
-    "fs": "m:105,m:106,m:107",  # 美股 NYSE, NASDAQ, AMEX
-    "fields": "f12,f14",
-}
-
-# 东方财富北交所参数（北证A股）
-EASTMONEY_BJ_PARAMS = {
-    "po": "1",
-    "np": "1",
-    "fltt": "2",
-    "invt": "2",
-    "fid": "f12",
-    "fs": "m:0+t:81",  # 北交所
-    "fields": "f12,f14",
-}
-PAGE_SIZE = 100
 
 
 def _load_cache() -> list[dict] | None:
     if not os.path.exists(CACHE_FILE):
         return None
     try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if time.time() - data.get("ts", 0) < CACHE_TTL:
-            return data["stocks"]
-    except (json.JSONDecodeError, KeyError):
-        pass
-    return None
+        with open(CACHE_FILE, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except Exception:
+        return None
+    if time.time() - float(payload.get("ts") or 0) >= CACHE_TTL:
+        return None
+    rows = payload.get("stocks")
+    return rows if isinstance(rows, list) else None
 
 
-def _save_cache(stocks: list[dict]):
+def _save_cache(stocks: list[dict]) -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"ts": time.time(), "stocks": stocks}, f, ensure_ascii=False)
+    with open(CACHE_FILE, "w", encoding="utf-8") as fh:
+        json.dump({"ts": time.time(), "stocks": stocks}, fh, ensure_ascii=False)
 
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Referer": "https://quote.eastmoney.com/",
-}
+def _fetch_page(
+    client: httpx.Client,
+    *,
+    params: dict[str, str],
+    page: int,
+) -> list[dict]:
+    payload = {**params, "pn": str(page), "pz": str(PAGE_SIZE)}
+    response = client.get(EASTMONEY_URL, params=payload, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    items = (data.get("data") or {}).get("diff") or []
+    return [
+        {"symbol": str(item.get("f12") or ""), "name": str(item.get("f14") or ""), "market": "CN"}
+        for item in items
+        if str(item.get("f12") or "").strip()
+    ]
 
 
-def _fetch_page(client: httpx.Client, page: int) -> list[dict]:
-    """获取东方财富股票列表的单页"""
-    params = {**EASTMONEY_PARAMS, "pn": str(page), "pz": str(PAGE_SIZE)}
-    resp = client.get(EASTMONEY_URL, params=params, timeout=30, follow_redirects=True)
-    data = resp.json()
-    diff = data.get("data") or {}
-    items = diff.get("diff") or []
-    return [{"symbol": str(item["f12"]), "name": str(item["f14"]), "market": "CN"} for item in items]
-
-
-def _fetch_from_eastmoney() -> list[dict]:
-    """东方财富 A 股列表（HTTP 分页并发获取）"""
-    with httpx.Client(follow_redirects=True, headers=HEADERS, timeout=30) as client:
-        # 第一页: 获取总数
-        params = {**EASTMONEY_PARAMS, "pn": "1", "pz": str(PAGE_SIZE)}
-        resp = client.get(EASTMONEY_URL, params=params)
-        data = resp.json()
-        root = data.get("data") or {}
-        total = root.get("total", 0)
-        first_items = root.get("diff") or []
-
-        stocks = [{"symbol": str(item["f12"]), "name": str(item["f14"]), "market": "CN"} for item in first_items]
-
+def _fetch_market_from_eastmoney(params: dict[str, str]) -> list[dict]:
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=30) as client:
+        first_page = _fetch_page(client, params=params, page=1)
+        response = client.get(EASTMONEY_URL, params={**params, "pn": "1", "pz": str(PAGE_SIZE)})
+        response.raise_for_status()
+        total = int(((response.json().get("data") or {}).get("total")) or 0)
         if total <= PAGE_SIZE:
-            return stocks
+            return first_page
 
-        # 剩余页并发获取
+        stocks = list(first_page)
         pages_needed = (total + PAGE_SIZE - 1) // PAGE_SIZE
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            futures = {pool.submit(_fetch_page, client, pn): pn for pn in range(2, pages_needed + 1)}
+            futures = [
+                pool.submit(_fetch_page, client, params=params, page=page)
+                for page in range(2, pages_needed + 1)
+            ]
             for future in concurrent.futures.as_completed(futures):
                 try:
                     stocks.extend(future.result())
-                except Exception as e:
-                    logger.warning(f"东方财富第 {futures[future]} 页获取失败: {e}")
-
-    return stocks
-
-
-def _fetch_hk_page(client: httpx.Client, page: int) -> list[dict]:
-    """获取东方财富港股列表的单页"""
-    params = {**EASTMONEY_HK_PARAMS, "pn": str(page), "pz": str(PAGE_SIZE)}
-    resp = client.get(EASTMONEY_URL, params=params, timeout=30, follow_redirects=True)
-    data = resp.json()
-    diff = data.get("data") or {}
-    items = diff.get("diff") or []
-    return [{"symbol": str(item["f12"]), "name": str(item["f14"]), "market": "HK"} for item in items]
-
-
-def _fetch_hk_from_eastmoney() -> list[dict]:
-    """东方财富港股列表"""
-    with httpx.Client(follow_redirects=True, headers=HEADERS, timeout=30) as client:
-        params = {**EASTMONEY_HK_PARAMS, "pn": "1", "pz": str(PAGE_SIZE)}
-        resp = client.get(EASTMONEY_URL, params=params)
-        data = resp.json()
-        root = data.get("data") or {}
-        total = root.get("total", 0)
-        first_items = root.get("diff") or []
-
-        stocks = [{"symbol": str(item["f12"]), "name": str(item["f14"]), "market": "HK"} for item in first_items]
-
-        if total <= PAGE_SIZE:
-            return stocks
-
-        pages_needed = (total + PAGE_SIZE - 1) // PAGE_SIZE
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            futures = {pool.submit(_fetch_hk_page, client, pn): pn for pn in range(2, pages_needed + 1)}
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    stocks.extend(future.result())
-                except Exception as e:
-                    logger.warning(f"东方财富港股第 {futures[future]} 页获取失败: {e}")
-
-    return stocks
-
-
-def _fetch_bj_page(client: httpx.Client, page: int) -> list[dict]:
-    """获取东方财富北交所列表的单页"""
-    params = {**EASTMONEY_BJ_PARAMS, "pn": str(page), "pz": str(PAGE_SIZE)}
-    resp = client.get(EASTMONEY_URL, params=params, timeout=30, follow_redirects=True)
-    data = resp.json()
-    diff = data.get("data") or {}
-    items = diff.get("diff") or []
-    return [{"symbol": str(item["f12"]), "name": str(item["f14"]), "market": "CN"} for item in items]
-
-
-def _fetch_bj_from_eastmoney() -> list[dict]:
-    """东方财富北交所列表（HTTP 分页并发获取）"""
-    with httpx.Client(follow_redirects=True, headers=HEADERS, timeout=30) as client:
-        # 第一页: 获取总数
-        params = {**EASTMONEY_BJ_PARAMS, "pn": "1", "pz": str(PAGE_SIZE)}
-        resp = client.get(EASTMONEY_URL, params=params)
-        data = resp.json()
-        root = data.get("data") or {}
-        total = root.get("total", 0)
-        first_items = root.get("diff") or []
-
-        stocks = [{"symbol": str(item["f12"]), "name": str(item["f14"]), "market": "CN"} for item in first_items]
-
-        if total <= PAGE_SIZE:
-            return stocks
-
-        # 剩余页并发获取
-        pages_needed = (total + PAGE_SIZE - 1) // PAGE_SIZE
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            futures = {pool.submit(_fetch_bj_page, client, pn): pn for pn in range(2, pages_needed + 1)}
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    stocks.extend(future.result())
-                except Exception as e:
-                    logger.warning(f"东方财富北交所第 {futures[future]} 页获取失败: {e}")
-
-    return stocks
-
-
-def _fetch_us_page(client: httpx.Client, page: int) -> list[dict]:
-    """获取东方财富美股列表的单页"""
-    params = {**EASTMONEY_US_PARAMS, "pn": str(page), "pz": str(PAGE_SIZE)}
-    resp = client.get(EASTMONEY_URL, params=params, timeout=30, follow_redirects=True)
-    data = resp.json()
-    diff = data.get("data") or {}
-    items = diff.get("diff") or []
-    return [{"symbol": str(item["f12"]), "name": str(item["f14"]), "market": "US"} for item in items]
-
-
-def _fetch_us_from_eastmoney() -> list[dict]:
-    """东方财富美股列表"""
-    with httpx.Client(follow_redirects=True, headers=HEADERS, timeout=30) as client:
-        params = {**EASTMONEY_US_PARAMS, "pn": "1", "pz": str(PAGE_SIZE)}
-        resp = client.get(EASTMONEY_URL, params=params)
-        data = resp.json()
-        root = data.get("data") or {}
-        total = root.get("total", 0)
-        first_items = root.get("diff") or []
-
-        stocks = [{"symbol": str(item["f12"]), "name": str(item["f14"]), "market": "US"} for item in first_items]
-
-        if total <= PAGE_SIZE:
-            return stocks
-
-        pages_needed = (total + PAGE_SIZE - 1) // PAGE_SIZE
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            futures = {pool.submit(_fetch_us_page, client, pn): pn for pn in range(2, pages_needed + 1)}
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    stocks.extend(future.result())
-                except Exception as e:
-                    logger.warning(f"东方财富美股第 {futures[future]} 页获取失败: {e}")
-
-    return stocks
+                except Exception:
+                    logger.warning("eastmoney stock list page fetch failed", exc_info=True)
+        return stocks
 
 
 def _fetch_from_akshare() -> list[dict]:
-    """akshare 数据源（备用，可能有 SSL 问题）"""
     import akshare as ak
 
     df = ak.stock_info_a_code_name()
-    stocks = []
+    out: list[dict] = []
     for _, row in df.iterrows():
-        stocks.append({
-            "symbol": str(row["code"]),
-            "name": str(row["name"]),
-            "market": "CN",
-        })
-    return stocks
+        symbol = str(row.get("code") or "").strip()
+        if not symbol:
+            continue
+        out.append(
+            {
+                "symbol": symbol,
+                "name": str(row.get("name") or symbol),
+                "market": "CN",
+            }
+        )
+    return out
 
 
 def refresh_stock_list() -> list[dict]:
-    """拉取 A 股和港股列表并缓存"""
-    stocks = []
+    """Refresh the CN/BJ stock universe and persist it to cache."""
+    stocks: list[dict] = []
 
-    # A 股: 东方财富优先，akshare 备用
     try:
-        cn_stocks = _fetch_from_eastmoney()
-        stocks.extend(cn_stocks)
-        logger.info(f"东方财富获取 A 股列表成功: {len(cn_stocks)} 只")
-    except Exception as e:
-        logger.warning(f"东方财富获取 A 股失败: {e}")
+        cn_rows = _fetch_market_from_eastmoney(CN_PARAMS)
+        stocks.extend(cn_rows)
+        logger.info("eastmoney CN stock list refreshed: count=%s", len(cn_rows))
+    except Exception as exc:
+        logger.warning("eastmoney CN stock list refresh failed: %s", exc)
         try:
-            with concurrent.futures.ThreadPoolExecutor() as pool:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(_fetch_from_akshare)
-                cn_stocks = future.result(timeout=15)
-                stocks.extend(cn_stocks)
-            logger.info(f"akshare 获取 A 股列表成功: {len(cn_stocks)} 只")
-        except concurrent.futures.TimeoutError:
-            logger.error("akshare 获取超时（15s）")
-        except Exception as e2:
-            logger.error(f"A 股数据源获取失败: {e2}")
+                cn_rows = future.result(timeout=15)
+            stocks.extend(cn_rows)
+            logger.info("akshare CN stock list refreshed: count=%s", len(cn_rows))
+        except Exception:
+            logger.exception("fallback CN stock list refresh failed")
 
-    # 港股: 东方财富
     try:
-        hk_stocks = _fetch_hk_from_eastmoney()
-        stocks.extend(hk_stocks)
-        logger.info(f"东方财富获取港股列表成功: {len(hk_stocks)} 只")
-    except Exception as e:
-        logger.warning(f"东方财富获取港股失败: {e}")
+        bj_rows = _fetch_market_from_eastmoney(BJ_PARAMS)
+        stocks.extend(bj_rows)
+        logger.info("eastmoney BJ stock list refreshed: count=%s", len(bj_rows))
+    except Exception:
+        logger.warning("eastmoney BJ stock list refresh failed", exc_info=True)
 
-    # 美股: 东方财富
-    try:
-        us_stocks = _fetch_us_from_eastmoney()
-        stocks.extend(us_stocks)
-        logger.info(f"东方财富获取美股列表成功: {len(us_stocks)} 只")
-    except Exception as e:
-        logger.warning(f"东方财富获取美股失败: {e}")
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for row in stocks:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        deduped.append(
+            {
+                "symbol": symbol,
+                "name": str(row.get("name") or symbol),
+                "market": "CN",
+            }
+        )
 
-    # 北交所: 东方财富
-    try:
-        bj_stocks = _fetch_bj_from_eastmoney()
-        stocks.extend(bj_stocks)
-        logger.info(f"东方财富获取北交所列表成功: {len(bj_stocks)} 只")
-    except Exception as e:
-        logger.warning(f"东方财富获取北交所失败: {e}")
-
-    if stocks:
-        _save_cache(stocks)
-    return stocks
+    if deduped:
+        _save_cache(deduped)
+    return deduped
 
 
 def get_stock_list() -> list[dict]:
-    """获取股票列表(优先缓存)"""
     cached = _load_cache()
     if cached:
         return cached
     return refresh_stock_list()
 
 
-def _realtime_search(query: str, market: str = "", limit: int = 20) -> list[dict]:
-    """东方财富实时搜索 API"""
-    import urllib.parse
-    # 提高 count 以覆盖更多候选项（包含北交所）
-    url = f"https://searchapi.eastmoney.com/api/suggest/get?input={urllib.parse.quote(query)}&type=14&count={limit * 5}"
+def _normalize_symbol(code: str) -> str:
+    value = (code or "").strip().upper()
+    for prefix in ("SH", "SZ", "BJ"):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+            break
+    if "." in value:
+        value = value.split(".", 1)[0]
+    return value
 
+
+def _realtime_search(query: str, market: str = "", limit: int = 20) -> list[dict]:
+    if market and market != "CN":
+        return []
+
+    url = (
+        "https://searchapi.eastmoney.com/api/suggest/get"
+        f"?input={urllib.parse.quote(query)}&type=14&count={max(20, limit * 5)}"
+    )
     try:
         with httpx.Client(timeout=5) as client:
-            resp = client.get(url, headers=HEADERS)
-            data = resp.json()
-    except Exception as e:
-        logger.warning(f"实时搜索失败: {e}")
+            response = client.get(url, headers=HEADERS)
+            response.raise_for_status()
+            data = response.json()
+    except Exception:
+        logger.warning("realtime CN stock search failed", exc_info=True)
         return []
 
-    items = data.get("QuotationCodeTable", {}).get("Data", [])
-    if not items:
-        return []
-
-    def _normalize_symbol(code: str, mkt: str) -> str:
-        c = (code or "").strip().upper()
-        # 去掉可能的市场前缀/后缀，如 SH000001 / SZ000001 / BJ830799 / 00700.HK / 836239.BJ
-        for p in ("SH", "SZ", "BJ", "US", "HK"):
-            if c.startswith(p):
-                c = c[len(p):]
-                break
-        if "." in c:
-            # 形如 00700.HK / 836239.BJ
-            c = c.split(".")[0]
-        if mkt == "HK":
-            # 保证为 5 位代码
-            c = c.zfill(5)
-        return c
-
-    results = []
+    items = (data.get("QuotationCodeTable") or {}).get("Data") or []
+    results: list[dict] = []
     for item in items:
-        classify = (item.get("Classify") or "").strip()
-        security_type = (item.get("SecurityTypeName") or "").strip()
-        code_raw = (item.get("Code") or "").strip().upper()
-
-        # 判断市场
-        if (
-            classify in ("AStock", "BJStock")
-            or any(ch in security_type for ch in ("沪", "深", "北"))
+        classify = str(item.get("Classify") or "").strip()
+        security_type = str(item.get("SecurityTypeName") or "").strip()
+        code_raw = str(item.get("Code") or "").strip().upper()
+        if not (
+            classify in {"AStock", "BJStock"}
+            or any(token in security_type for token in ("沪", "深", "北"))
             or code_raw.endswith(".BJ")
             or code_raw.startswith("BJ")
         ):
-            stock_market = "CN"
-        elif classify == "HKStock" or "港" in security_type:
-            stock_market = "HK"
-        elif classify == "UsStock" or "美" in security_type:
-            stock_market = "US"
-        else:
-            continue  # 跳过其他类型（债券、基金等）
-
-        # 市场筛选
-        if market and stock_market != market:
             continue
-
-        # 只保留股票（排除债券等）
-        type_us = item.get("TypeUS", "")
-        if stock_market == "US" and type_us and type_us not in ("1", "2", "3"):  # 1=普通股, 3=ADR/ADS 等；5=ETF 等
+        symbol = _normalize_symbol(code_raw)
+        if not symbol:
             continue
-
-        code = item.get("Code", "")
-        symbol = _normalize_symbol(code, stock_market)
-
-        results.append({
-            "symbol": symbol,
-            "name": item.get("Name", ""),
-            "market": stock_market,
-        })
-
-        if len(results) >= limit:
-            break
-
-    return results
-
-
-def search_stocks(query: str, market: str = "", limit: int = 20) -> list[dict]:
-    """搜索股票 - 优先使用实时搜索，失败则使用缓存"""
-    q = query.strip()
-    if not q:
-        return []
-
-    # 尝试实时搜索
-    results = _realtime_search(q, market, limit)
-    if len(results) >= limit:
-        return results[:limit]
-
-    # 实时搜索结果不足时，用缓存补全（便于聚合多市场搜索结果）
-    cached = _cached_search(q, market, limit)
-    if not results:
-        if cached:
-            logger.info("实时搜索无结果，使用缓存搜索")
-        return cached
-
-    seen = {(r.get("market"), r.get("symbol")) for r in results}
-    for r in cached:
-        key = (r.get("market"), r.get("symbol"))
-        if key in seen:
-            continue
-        results.append(r)
-        seen.add(key)
+        results.append(
+            {
+                "symbol": symbol,
+                "name": str(item.get("Name") or symbol),
+                "market": "CN",
+            }
+        )
         if len(results) >= limit:
             break
     return results
 
 
 def _cached_search(query: str, market: str = "", limit: int = 20) -> list[dict]:
-    """从缓存中模糊搜索股票"""
-    stocks = get_stock_list()
-    if not stocks:
+    if market and market != "CN":
+        return []
+
+    rows = get_stock_list()
+    if not rows:
         return []
 
     q = query.strip().upper()
     if not q:
         return []
 
-    results = []
-    for s in stocks:
-        if market and s["market"] != market:
-            continue
-        code = s["symbol"].upper()
-        name = s["name"].upper()
-        # 代码前缀匹配优先
-        if code.startswith(q):
-            results.append((0, s))
+    matches: list[tuple[int, dict]] = []
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        name = str(row.get("name") or "").upper()
+        if symbol.startswith(q):
+            matches.append((0, row))
         elif q in name:
-            results.append((1, s))
-        elif q in code:
-            results.append((2, s))
-
-        if len(results) >= limit * 2:
+            matches.append((1, row))
+        elif q in symbol:
+            matches.append((2, row))
+        if len(matches) >= limit * 2:
             break
 
-    results.sort(key=lambda x: x[0])
-    return [r[1] for r in results[:limit]]
+    matches.sort(key=lambda item: item[0])
+    return [item[1] for item in matches[:limit]]
+
+
+def search_stocks(query: str, market: str = "", limit: int = 20) -> list[dict]:
+    q = query.strip()
+    if not q:
+        return []
+    market_value = str(market or "").strip().upper()
+    if market_value and market_value != "CN":
+        return []
+
+    results = _realtime_search(q, "CN", limit)
+    if len(results) >= limit:
+        return results[:limit]
+
+    cached = _cached_search(q, "CN", limit)
+    if not results:
+        return cached
+
+    seen = {(row.get("market"), row.get("symbol")) for row in results}
+    for row in cached:
+        key = (row.get("market"), row.get("symbol"))
+        if key in seen:
+            continue
+        results.append(row)
+        seen.add(key)
+        if len(results) >= limit:
+            break
+    return results[:limit]

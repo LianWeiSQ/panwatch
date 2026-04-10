@@ -14,7 +14,7 @@ router = APIRouter()
 
 class InsightItem(BaseModel):
     symbol: str = Field(..., description="股票代码")
-    market: str = Field(..., description="市场: CN/HK/US")
+    market: str = Field(..., description="市场: CN")
 
 
 class InsightsBatchRequest(BaseModel):
@@ -22,6 +22,10 @@ class InsightsBatchRequest(BaseModel):
 
 
 def _parse_market(market: str) -> MarketCode:
+    market_value = str(market or "").strip().upper() or "CN"
+    if market_value != "CN":
+        raise HTTPException(400, f"unsupported market in CN-only mode: {market_value}")
+    return MarketCode.CN
     try:
         return MarketCode(market)
     except ValueError:

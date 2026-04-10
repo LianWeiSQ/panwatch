@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from src.collectors.akshare_collector import _fetch_tencent_quotes, _tencent_symbol
+from src.core.market_data import market_data
 from src.models.market import MarketCode, MARKETS
 from src.web.database import SessionLocal
 from src.web.models import (
@@ -69,28 +69,8 @@ class PaperTradingEngine:
         return account
 
     def _fetch_quotes_map(self, symbols_markets: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
-        """批量获取报价，返回 {(market, symbol): quote_dict}"""
-        grouped: dict[MarketCode, list[str]] = {}
-        for symbol, market in symbols_markets:
-            mc = _to_market(market)
-            grouped.setdefault(mc, []).append(symbol)
-
-        out: dict[tuple[str, str], dict] = {}
-        for market, symbols in grouped.items():
-            if not symbols:
-                continue
-            tencent_syms = [_tencent_symbol(sym, market) for sym in symbols]
-            try:
-                rows = _fetch_tencent_quotes(tencent_syms)
-            except Exception as e:
-                logger.error(f"[模拟盘] 拉行情失败 {market.value}: {e}")
-                rows = []
-            by_symbol = {str(r.get("symbol")): r for r in rows}
-            for sym in symbols:
-                q = by_symbol.get(sym)
-                if q:
-                    out[(market.value, sym)] = q
-        return out
+        items = [{"symbol": symbol, "market": market} for symbol, market in symbols_markets]
+        return market_data.get_quotes_map(items)
 
     def _check_entries(
         self, db: Session, account: PaperTradingAccount,
@@ -415,19 +395,13 @@ class PaperTradingEngine:
             if not pos:
                 return {"ok": False, "error": "持仓不存在或已平仓"}
 
-            # 获取最新报价
-            mc = _to_market(pos.stock_market)
-            tsym = _tencent_symbol(pos.stock_symbol, mc)
-            try:
-                rows = _fetch_tencent_quotes([tsym])
-            except Exception:
-                rows = []
-
             exit_price = pos.current_price or pos.entry_price
-            if rows:
-                p = _safe_float(rows[0].get("current_price"))
-                if p and p > 0:
-                    exit_price = p
+            row = market_data.get_quote(pos.stock_symbol, _to_market(pos.stock_market))
+            if row:
+                price = _safe_float(row.get("current_price"))
+                if price and price > 0:
+                    exit_price = price
+
 
             trade = self._close_position(db, account, pos, exit_price, "manual")
             self._update_account_metrics(db, account)

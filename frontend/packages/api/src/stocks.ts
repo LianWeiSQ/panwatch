@@ -12,8 +12,99 @@ export interface StockItem {
   symbol: string
   name: string
   market: string
+  instrument_id?: number | null
+  instrument_type?: string
+  exchange?: string | null
+  underlying_symbol?: string | null
+  underlying_name?: string | null
+  contract_multiplier?: number | null
+  tick_size?: number | null
+  expiry_date?: string | null
+  is_main_contract?: boolean | null
   sort_order?: number
   agents?: StockAgentInfo[]
+}
+
+export interface StockWorkspaceAccount {
+  id: number
+  name: string
+  available_funds: number
+  enabled: boolean
+}
+
+export interface StockWorkspacePortfolioPosition {
+  id: number
+  stock_id: number
+  instrument_id?: number | null
+  instrument_type?: string
+  symbol: string
+  name: string
+  market: string
+  exchange?: string | null
+  underlying_symbol?: string | null
+  underlying_name?: string | null
+  contract_multiplier?: number | null
+  expiry_date?: string | null
+  is_main_contract?: boolean | null
+  cost_price: number
+  quantity: number
+  invested_amount: number | null
+  sort_order?: number
+  trading_style: string
+  current_price: number | null
+  current_price_cny?: number | null
+  change_pct: number | null
+  market_value?: number | null
+  market_value_cny?: number | null
+  pnl?: number | null
+  pnl_pct?: number | null
+  exchange_rate?: number | null
+}
+
+export interface StockWorkspacePortfolioAccount {
+  id: number
+  name: string
+  available_funds: number
+  total_market_value: number
+  total_cost: number
+  total_pnl: number
+  total_pnl_pct: number
+  total_assets: number
+  positions: StockWorkspacePortfolioPosition[]
+}
+
+export interface StockWorkspaceResponse {
+  generated_at: string
+  market_status: Array<{
+    code: string
+    name: string
+    status: string
+    status_text: string
+    is_trading: boolean
+    sessions: string[]
+    local_time: string
+    timezone?: string
+  }>
+  accounts: StockWorkspaceAccount[]
+  stocks: StockItem[]
+  portfolio: {
+    accounts: StockWorkspacePortfolioAccount[]
+    total: {
+      total_market_value: number
+      total_cost: number
+      total_pnl: number
+      total_pnl_pct: number
+      available_funds: number
+      total_assets: number
+    }
+    exchange_rates?: Record<string, number>
+    quotes?: Record<string, { current_price: number | null; change_pct: number | null }>
+    quotes_by_key?: Record<string, { current_price: number | null; change_pct: number | null }>
+  }
+  quotes: Record<string, { current_price: number | null; change_pct: number | null }>
+  kline_summaries: Record<string, Record<string, any>>
+  pool_suggestions: Record<string, Record<string, any>>
+  price_alert_summaries: Record<string, { total: number; enabled: number }>
 }
 
 export interface StockCreatePayload {
@@ -63,6 +154,7 @@ function withQuery(path: string, params: TriggerStockAgentOptions): string {
 
 export const stocksApi = {
   list: () => fetchAPI<StockItem[]>('/stocks'),
+  workspace: () => fetchAPI<StockWorkspaceResponse>('/stocks/workspace', { timeoutMs: 45000 }),
   create: (payload: StockCreatePayload) =>
     fetchAPI<StockItem>('/stocks', {
       method: 'POST',

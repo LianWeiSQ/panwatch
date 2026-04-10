@@ -41,6 +41,16 @@ def market_label(market: MarketCode) -> str:
     return market.value
 
 
+def runtime_market_label(market: MarketCode) -> str:
+    if market == MarketCode.CN:
+        return "A股"
+    if market == MarketCode.CN_FUT:
+        return "期货"
+    if market == MarketCode.CN_OPT:
+        return "期权"
+    return market.value
+
+
 # 标准化操作建议
 SUGGESTION_TYPES = {
     "建仓": "buy",  # 新开仓位
@@ -113,7 +123,7 @@ class IntradayMonitorAgent(BaseAgent):
 
         # 按股票所属市场做交易时段门禁（而非全局任一市场开盘）
         if not self.bypass_market_hours and not is_market_trading(market):
-            msg = f"当前{market_label(market)}非交易时段，已跳过执行"
+            msg = f"当前{runtime_market_label(market)}非交易时段，已跳过执行"
             logger.info(f"{msg}: {symbol}")
             return {
                 "stocks": [],

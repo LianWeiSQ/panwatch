@@ -10,6 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.config import Settings
+from src.core.runtime_views import build_dashboard_runtime
 from src.core.strategy_engine import get_strategy_stats, list_strategy_signals
 from src.web.database import get_db
 from src.web.models import (
@@ -23,6 +24,21 @@ from src.web.models import (
 )
 
 router = APIRouter()
+
+
+@router.get("/runtime")
+def get_dashboard_runtime(
+    discover_market: str = Query("CN", description="discovery market: CN"),
+    boards_mode: str = Query("gainers", description="board mode"),
+    stocks_mode: str = Query("for_you", description="stock mode"),
+    db: Session = Depends(get_db),
+):
+    return build_dashboard_runtime(
+        db,
+        discover_market=discover_market,
+        boards_mode=boards_mode,
+        stocks_mode=stocks_mode,
+    )
 
 
 def _format_datetime(dt) -> str:
@@ -40,7 +56,7 @@ def _format_datetime(dt) -> str:
 
 def _to_market(market: str) -> str:
     m = (market or "ALL").strip().upper()
-    return m if m in ("ALL", "CN", "HK", "US") else "ALL"
+    return m if m in ("ALL", "CN") else "ALL"
 
 
 def _action_priority(item: dict) -> int:
@@ -140,7 +156,7 @@ def _load_latest_insights(db: Session) -> list[dict]:
 
 @router.get("/overview")
 def get_dashboard_overview(
-    market: str = Query("ALL", description="市场过滤: ALL/CN/HK/US"),
+    market: str = Query("ALL", description="市场过滤: ALL/CN"),
     action_limit: int = Query(6, ge=3, le=20),
     risk_limit: int = Query(6, ge=3, le=20),
     days: int = Query(45, ge=7, le=365),
@@ -232,10 +248,6 @@ def get_dashboard_overview(
     for pos, stock in positions:
         market_code = (stock.market or "CN").strip().upper() or "CN"
         fx = 1.0
-        if market_code == "HK":
-            fx = 0.92
-        elif market_code == "US":
-            fx = 7.25
         cost = float(pos.cost_price or 0.0) * float(pos.quantity or 0) * fx
         invested_cost += cost
         bucket = by_market.setdefault(

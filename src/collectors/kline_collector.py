@@ -10,6 +10,10 @@ import httpx
 import time
 
 from src.core.cn_symbol import get_cn_prefix, is_cn_sh
+from src.core.tushare_futures import (
+    TushareUnavailable,
+    get_tushare_futures_daily_bars,
+)
 from src.models.market import MarketCode
 
 logger = logging.getLogger(__name__)
@@ -23,6 +27,69 @@ _STOOQ_CACHE: dict[str, tuple[float, list["KlineData"]]] = {}
 _STOOQ_CACHE_TTL_SECONDS = 300
 _EASTMONEY_CACHE: dict[str, tuple[float, int, list["KlineData"]]] = {}
 _EASTMONEY_CACHE_TTL_SECONDS = 300
+
+
+def _fetch_cn_futures_klines(symbol: str, days: int) -> list["KlineData"]:
+    value = (symbol or "").strip().upper()
+    if not value:
+        return []
+    try:
+        rows = get_tushare_futures_daily_bars(value, days=max(1, int(days or 1)))
+        if rows:
+            logger.info(
+                "cn_fut kline provider=tushare fallback=false symbol=%s count=%s",
+                value,
+                len(rows),
+            )
+            return [
+                KlineData(
+                    date=str(row.get("date") or ""),
+                    open=float(row.get("open") or 0),
+                    close=float(row.get("close") or 0),
+                    high=float(row.get("high") or 0),
+                    low=float(row.get("low") or 0),
+                    volume=float(row.get("volume") or 0),
+                )
+                for row in rows
+            ]
+    except TushareUnavailable as exc:
+        logger.info(
+            "cn_fut kline provider=tushare fallback=true symbol=%s reason=%s",
+            value,
+            exc,
+        )
+    except Exception as exc:
+        logger.warning(
+            "cn_fut kline provider=tushare fallback=true symbol=%s reason=%s",
+            value,
+            exc,
+        )
+    try:
+        import akshare as ak
+
+        df = ak.futures_zh_daily_sina(symbol=value)
+        if df is None or df.empty:
+            return []
+        logger.info("cn_fut kline provider=akshare fallback=true symbol=%s", value)
+        rows = []
+        for row in df.tail(max(1, int(days or 1))).to_dict(orient="records"):
+            try:
+                rows.append(
+                    KlineData(
+                        date=str(row.get("date") or ""),
+                        open=float(row.get("open") or 0),
+                        close=float(row.get("close") or 0),
+                        high=float(row.get("high") or 0),
+                        low=float(row.get("low") or 0),
+                        volume=float(row.get("volume") or 0),
+                    )
+                )
+            except Exception:
+                continue
+        return rows
+    except Exception as exc:
+        logger.warning("failed to fetch futures klines for %s: %s", value, exc)
+        return []
 
 
 def _fetch_stooq_us_klines(symbol: str) -> list[KlineData]:
@@ -484,6 +551,9 @@ class KlineCollector:
 
     def get_klines(self, symbol: str, days: int = 60) -> list[KlineData]:
         """获取日K线数据"""
+        if self.market == MarketCode.CN_FUT:
+            return _fetch_cn_futures_klines(symbol, days)
+
         tencent_sym = _tencent_symbol(symbol, self.market)
 
         params = {

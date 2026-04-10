@@ -4,10 +4,18 @@ import threading
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
+from src.core.market_data import market_data
+from src.core.instrument_service import (
+    FUTURES_MARKET,
+    OPTIONS_MARKET,
+    ensure_stock_compatibility,
+    search_future_instruments,
+)
+from src.core.portfolio_service import list_watchlist_stocks
+from src.core.runtime_views import build_market_status, build_stocks_workspace
 from src.web.database import get_db
 from src.web.models import (
     Stock,
@@ -18,8 +26,6 @@ from src.web.models import (
     PriceAlertHit,
 )
 from src.web.stock_list import search_stocks, refresh_stock_list
-from src.collectors.akshare_collector import _tencent_symbol, _fetch_tencent_quotes
-from src.models.market import MarketCode, MARKETS
 from src.core.agent_catalog import AGENT_KIND_WORKFLOW, infer_agent_kind
 
 logger = logging.getLogger(__name__)
@@ -48,6 +54,15 @@ class StockResponse(BaseModel):
     symbol: str
     name: str
     market: str
+    instrument_id: int | None = None
+    instrument_type: str = "equity"
+    exchange: str | None = None
+    underlying_symbol: str | None = None
+    underlying_name: str | None = None
+    contract_multiplier: float | None = None
+    tick_size: float | None = None
+    expiry_date: str | None = None
+    is_main_contract: bool | None = None
     sort_order: int
     agents: list[StockAgentInfo] = []
 
@@ -76,11 +91,21 @@ class StockReorderRequest(BaseModel):
 
 
 def _stock_to_response(stock: Stock) -> dict:
+    instrument = stock.instrument
     return {
         "id": stock.id,
         "symbol": stock.symbol,
         "name": stock.name,
         "market": stock.market,
+        "instrument_id": stock.instrument_id,
+        "instrument_type": getattr(instrument, "instrument_type", "equity"),
+        "exchange": getattr(instrument, "exchange", None),
+        "underlying_symbol": getattr(instrument, "underlying_symbol", None),
+        "underlying_name": getattr(instrument, "underlying_name", None),
+        "contract_multiplier": getattr(instrument, "contract_multiplier", 1.0),
+        "tick_size": getattr(instrument, "tick_size", None),
+        "expiry_date": getattr(instrument, "expiry_date", None),
+        "is_main_contract": getattr(instrument, "is_main_contract", None),
         "sort_order": stock.sort_order or 0,
         "agents": [
             {
@@ -97,76 +122,42 @@ def _stock_to_response(stock: Stock) -> dict:
 
 @router.get("/markets/status")
 def get_market_status():
-    """获取各市场的交易状态"""
-    from datetime import datetime
-
-    result = []
-    for market_code, market_def in MARKETS.items():
-        try:
-            now = datetime.now(market_def.get_tz())
-            is_trading = market_def.is_trading_time()
-
-            # 获取交易时段描述
-            sessions_desc = []
-            for session in market_def.sessions:
-                sessions_desc.append(f"{session.start.strftime('%H:%M')}-{session.end.strftime('%H:%M')}")
-
-            # 判断状态
-            weekday = now.weekday()
-            current_time = now.time()
-
-            if weekday >= 5:
-                status = "closed"
-                status_text = "休市（周末）"
-            elif is_trading:
-                status = "trading"
-                status_text = "交易中"
-            else:
-                # 判断是盘前还是盘后
-                first_session = market_def.sessions[0]
-                last_session = market_def.sessions[-1]
-                if current_time < first_session.start:
-                    status = "pre_market"
-                    status_text = "盘前"
-                elif current_time > last_session.end:
-                    status = "after_hours"
-                    status_text = "已收盘"
-                else:
-                    status = "break"
-                    status_text = "午间休市"
-
-            result.append({
-                "code": market_code.value,
-                "name": market_def.name,
-                "status": status,
-                "status_text": status_text,
-                "is_trading": is_trading,
-                "sessions": sessions_desc,
-                "local_time": now.strftime("%H:%M"),
-                "timezone": market_def.timezone,
-            })
-        except Exception as e:
-            # 单个市场获取失败不影响其他市场
-            logger.error(f"获取 {market_code.value} 市场状态失败: {e}")
-            result.append({
-                "code": market_code.value,
-                "name": market_def.name,
-                "status": "unknown",
-                "status_text": "未知",
-                "is_trading": False,
-                "sessions": [],
-                "local_time": "--:--",
-                "timezone": market_def.timezone,
-                "error": str(e),
-            })
-
-    return result
+    return build_market_status()
 
 
 @router.get("/search")
 def search(q: str = Query("", min_length=1), market: str = Query("")):
     """模糊搜索股票(代码/名称)"""
-    return search_stocks(q, market)
+    market_value = str(market or "").strip().upper()
+    if market_value in {"HK", "US"}:
+        raise HTTPException(400, f"unsupported market in CN-only mode: {market_value}")
+    results: list[dict] = []
+    if market_value not in {FUTURES_MARKET, OPTIONS_MARKET}:
+        for item in search_stocks(q, market_value if market_value == "CN" else ""):
+            results.append(
+                {
+                    "symbol": item.get("symbol"),
+                    "name": item.get("name"),
+                    "market": item.get("market"),
+                    "instrument_type": "equity",
+                    "contract_multiplier": 1.0,
+                }
+            )
+    if market_value in {"", FUTURES_MARKET}:
+        results.extend(search_future_instruments(q, limit=20))
+
+    deduped: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in results:
+        key = (
+            str(item.get("market") or "").upper(),
+            str(item.get("symbol") or "").upper(),
+        )
+        if not key[1] or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped[:20]
 
 
 @router.post("/refresh-list")
@@ -178,57 +169,59 @@ def refresh_list():
 
 @router.get("", response_model=list[StockResponse])
 def list_stocks(db: Session = Depends(get_db)):
-    stocks = db.query(Stock).order_by(Stock.sort_order.asc(), Stock.id.asc()).all()
+    stocks = list_watchlist_stocks(db)
     return [_stock_to_response(s) for s in stocks]
 
 
 @router.get("/quotes")
 def get_quotes(db: Session = Depends(get_db)):
-    """获取所有自选股的实时行情"""
-    stocks = db.query(Stock).all()
+    """????????????"""
+    stocks = list_watchlist_stocks(db)
     if not stocks:
         return {}
+    rows = market_data.get_quotes_batch([{"symbol": stock.symbol, "market": stock.market} for stock in stocks])
+    return {
+        str(row.get("symbol") or "").upper(): {
+            "current_price": row.get("current_price"),
+            "change_pct": row.get("change_pct"),
+            "change_amount": row.get("change_amount"),
+            "prev_close": row.get("prev_close"),
+        }
+        for row in rows
+    }
 
-    # 按市场分组
-    market_stocks: dict[str, list[Stock]] = {}
-    for s in stocks:
-        market_stocks.setdefault(s.market, []).append(s)
 
-    quotes = {}
-    for market, stock_list in market_stocks.items():
-        try:
-            market_code = MarketCode(market)
-        except ValueError:
-            continue
-
-        symbols = [_tencent_symbol(s.symbol, market_code) for s in stock_list]
-        try:
-            items = _fetch_tencent_quotes(symbols)
-            for item in items:
-                quotes[item["symbol"]] = {
-                    "current_price": item["current_price"],
-                    "change_pct": item["change_pct"],
-                    "change_amount": item["change_amount"],
-                    "prev_close": item["prev_close"],
-                }
-        except Exception as e:
-            logger.error(f"获取 {market} 行情失败: {e}")
-
-    return quotes
+@router.get("/workspace")
+def get_workspace(db: Session = Depends(get_db)):
+    return build_stocks_workspace(db)
 
 
 @router.post("", response_model=StockResponse)
 def create_stock(stock: StockCreate, db: Session = Depends(get_db)):
+    market_value = str(stock.market or "CN").upper()
+    if market_value in {"HK", "US"}:
+        raise HTTPException(400, f"unsupported market in CN-only mode: {market_value}")
+    symbol_value = (
+        str(stock.symbol or "").strip().upper()
+        if market_value in {FUTURES_MARKET, OPTIONS_MARKET}
+        else str(stock.symbol or "").strip()
+    )
     existing = db.query(Stock).filter(
-        Stock.symbol == stock.symbol, Stock.market == stock.market
+        Stock.symbol == symbol_value, Stock.market == market_value
     ).first()
     if existing:
         raise HTTPException(400, f"股票 {stock.symbol} 已存在")
 
-    max_order = db.query(func.max(Stock.sort_order)).scalar() or 0
-    db_stock = Stock(**stock.model_dump(), sort_order=int(max_order) + 1)
-    db.add(db_stock)
+    ensured = ensure_stock_compatibility(
+        db,
+        symbol=symbol_value,
+        name=stock.name,
+        market=market_value,
+    )
     db.commit()
+    db_stock = ensured.stock
+    if not db_stock:
+        raise HTTPException(500, "failed to create compatibility stock")
     db.refresh(db_stock)
     return _stock_to_response(db_stock)
 

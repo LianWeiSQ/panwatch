@@ -43,6 +43,13 @@ SYSTEM_PROMPT = """你是 PanWatch 的 AI 投资助手。
 MAX_HISTORY_MESSAGES = 20
 MAX_TOOL_ROUNDS = 5
 
+
+def _normalize_market(market: str | None) -> str:
+    market_value = (market or "CN").strip().upper() or "CN"
+    if market_value != "CN":
+        raise HTTPException(400, f"unsupported market in CN-only mode: {market_value}")
+    return market_value
+
 # ──────────────── Tool Definitions ────────────────
 
 CHAT_TOOLS = [
@@ -63,7 +70,7 @@ CHAT_TOOLS = [
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "股票代码，如 600519"},
-                    "market": {"type": "string", "description": "市场代码：CN/HK/US", "default": "CN"},
+                    "market": {"type": "string", "description": "市场代码：CN", "default": "CN"},
                 },
                 "required": ["symbol"],
             },
@@ -78,7 +85,7 @@ CHAT_TOOLS = [
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "股票代码"},
-                    "market": {"type": "string", "description": "市场代码：CN/HK/US", "default": "CN"},
+                    "market": {"type": "string", "description": "市场代码：CN", "default": "CN"},
                 },
                 "required": ["symbol"],
             },
@@ -93,7 +100,7 @@ CHAT_TOOLS = [
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "股票代码"},
-                    "market": {"type": "string", "description": "市场代码：CN/HK/US", "default": "CN"},
+                    "market": {"type": "string", "description": "市场代码：CN", "default": "CN"},
                 },
                 "required": ["symbol"],
             },
@@ -280,7 +287,7 @@ async def _fetch_realtime_context(symbol: str, market: str) -> str:
         from src.collectors.akshare_collector import _fetch_tencent_quotes, _tencent_symbol
         from src.models.market import MarketCode
 
-        mc = MarketCode(market) if market in ("CN", "HK", "US") else MarketCode.CN
+        mc = MarketCode(_normalize_market(market))
         tsym = _tencent_symbol(symbol, mc)
         rows = await asyncio.to_thread(_fetch_tencent_quotes, [tsym])
         if not rows:
@@ -326,6 +333,7 @@ def suggested_questions(
     db: Session = Depends(get_db),
 ):
     """根据股票当前状态生成推荐问题（纯模板，不调 AI）。"""
+    market = _normalize_market(market)
     questions: list[str] = []
 
     # 查最近建议

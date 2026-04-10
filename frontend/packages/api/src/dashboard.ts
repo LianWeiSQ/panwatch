@@ -71,10 +71,7 @@ export interface DashboardPortfolioSummary {
     available_funds: number
     total_assets: number
   }
-  exchange_rates?: {
-    HKD_CNY: number
-    USD_CNY?: number
-  }
+  exchange_rates?: Record<string, number>
 }
 
 export interface DashboardWatchStock {
@@ -170,7 +167,7 @@ export interface DashboardRiskSignalItem extends StrategySignalItem {
 
 export interface DashboardOverviewResponse {
   generated_at: string
-  market: 'ALL' | 'CN' | 'HK' | 'US'
+  market: 'ALL' | 'CN'
   snapshot_date: string
   data_freshness: {
     strategy_snapshot_date: string
@@ -218,6 +215,68 @@ export interface DashboardOverviewResponse {
   insights: DashboardInsightItem[]
 }
 
+export interface DashboardRuntimeInsightRecord extends DashboardHistoryItem {
+  updated_at?: string
+}
+
+export interface DashboardRuntimeQuoteRow {
+  symbol: string
+  market: string
+  current_price: number | null
+  change_pct: number | null
+  change_amount?: number | null
+  prev_close?: number | null
+  open_price?: number | null
+  high_price?: number | null
+  low_price?: number | null
+  volume?: number | null
+  turnover?: number | null
+}
+
+export interface DashboardRuntimeResponse {
+  generated_at: string
+  market_status: DashboardMarketStatus[]
+  indices: DashboardMarketIndex[]
+  portfolio: DashboardPortfolioSummary
+  watchlist: DashboardWatchStock[]
+  quotes: Record<string, DashboardRuntimeQuoteRow>
+  monitor_stocks: DashboardMonitorStock[]
+  insights: {
+    daily_report: DashboardRuntimeInsightRecord | null
+    premarket_outlook: DashboardRuntimeInsightRecord | null
+    news_digest: DashboardRuntimeInsightRecord | null
+  }
+  discovery: {
+    market: 'CN'
+    boards_mode: 'gainers' | 'turnover'
+    stocks_mode: 'turnover' | 'gainers' | 'for_you'
+    boards: Array<{
+      code: string
+      name: string
+      change_pct: number | null
+      turnover: number | null
+    }>
+    stocks: Array<{
+      symbol: string
+      market: string
+      name: string
+      price?: number | null
+      change_pct: number | null
+      turnover: number | null
+    }>
+  }
+  action_center: {
+    opportunities: StrategySignalItem[]
+    risk_items: DashboardRiskSignalItem[]
+  }
+  data_freshness: {
+    strategy_snapshot_date: string
+    entry_snapshot_date: string
+    market_scan_snapshot_date: string
+    latest_history_updated_at: string
+  }
+}
+
 export const dashboardApi = {
   indices: () => fetchAPI<DashboardMarketIndex[]>('/market/indices'),
 
@@ -248,12 +307,28 @@ export const dashboardApi = {
       }),
       {
         method: 'POST',
-        timeoutMs: params?.analyze ? 90000 : 30000,
+      timeoutMs: params?.analyze ? 90000 : 30000,
+      }
+    ),
+
+  runtime: (params?: {
+    discover_market?: 'CN'
+    boards_mode?: 'gainers' | 'turnover'
+    stocks_mode?: 'turnover' | 'gainers' | 'for_you'
+  }) =>
+    fetchAPI<DashboardRuntimeResponse>(
+      withQuery('/dashboard/runtime', {
+        discover_market: params?.discover_market,
+        boards_mode: params?.boards_mode,
+        stocks_mode: params?.stocks_mode,
+      }),
+      {
+        timeoutMs: 45000,
       }
     ),
 
   overview: (params?: {
-    market?: 'ALL' | 'CN' | 'HK' | 'US'
+    market?: 'ALL' | 'CN'
     action_limit?: number
     risk_limit?: number
     days?: number

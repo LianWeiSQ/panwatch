@@ -1533,6 +1533,203 @@ def _m117_chat_initial_context(conn: Connection) -> None:
         pass  # column already exists
 
 
+def _m118_instruments_and_stock_mapping(conn: Connection) -> None:
+    conn.execute(
+        text(
+            """
+CREATE TABLE IF NOT EXISTS instruments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  instrument_type TEXT NOT NULL DEFAULT 'equity',
+  market TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  display_symbol TEXT DEFAULT '',
+  name TEXT NOT NULL,
+  exchange TEXT DEFAULT '',
+  currency TEXT DEFAULT 'CNY',
+  underlying_symbol TEXT DEFAULT '',
+  underlying_name TEXT DEFAULT '',
+  contract_multiplier REAL NOT NULL DEFAULT 1.0,
+  tick_size REAL,
+  expiry_date TEXT DEFAULT '',
+  is_main_contract INTEGER DEFAULT 0,
+  option_type TEXT DEFAULT '',
+  strike_price REAL,
+  exercise_style TEXT DEFAULT '',
+  status TEXT DEFAULT 'active',
+  meta TEXT DEFAULT '{}',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+"""
+        )
+    )
+    _create_index_if_missing(
+        conn,
+        "ix_instruments_market_type",
+        "CREATE INDEX ix_instruments_market_type ON instruments(market, instrument_type)",
+    )
+    _create_index_if_missing(
+        conn,
+        "ix_instruments_symbol_market",
+        "CREATE INDEX ix_instruments_symbol_market ON instruments(symbol, market)",
+    )
+    _create_index_if_missing(
+        conn,
+        "ix_instruments_unique_key",
+        "CREATE UNIQUE INDEX ix_instruments_unique_key ON instruments(instrument_type, market, symbol)",
+    )
+
+    _add_column_if_missing(
+        conn,
+        "stocks",
+        "instrument_id",
+        "ALTER TABLE stocks ADD COLUMN instrument_id INTEGER REFERENCES instruments(id) ON DELETE SET NULL",
+    )
+
+    if not _has_table(conn, "stocks"):
+        return
+
+    conn.execute(
+        text(
+            """
+INSERT INTO instruments (
+  instrument_type,
+  market,
+  symbol,
+  display_symbol,
+  name,
+  exchange,
+  currency,
+  underlying_symbol,
+  underlying_name,
+  contract_multiplier,
+  tick_size,
+  expiry_date,
+  is_main_contract,
+  option_type,
+  strike_price,
+  exercise_style,
+  status,
+  meta
+)
+SELECT
+  CASE
+    WHEN s.market = 'CN_FUT' THEN 'future'
+    WHEN s.market = 'CN_OPT' THEN 'option'
+    ELSE 'equity'
+  END AS instrument_type,
+  s.market,
+  s.symbol,
+  s.symbol,
+  s.name,
+  '',
+  CASE
+    WHEN s.market = 'HK' THEN 'HKD'
+    WHEN s.market = 'US' THEN 'USD'
+    ELSE 'CNY'
+  END AS currency,
+  '',
+  '',
+  1.0,
+  NULL,
+  '',
+  CASE
+    WHEN s.market = 'CN_FUT' AND UPPER(s.symbol) LIKE '%0' THEN 1
+    ELSE 0
+  END AS is_main_contract,
+  '',
+  NULL,
+  '',
+  'active',
+  '{}'
+FROM stocks s
+LEFT JOIN instruments i
+  ON i.instrument_type = CASE
+    WHEN s.market = 'CN_FUT' THEN 'future'
+    WHEN s.market = 'CN_OPT' THEN 'option'
+    ELSE 'equity'
+  END
+ AND i.market = s.market
+ AND i.symbol = s.symbol
+WHERE i.id IS NULL
+"""
+        )
+    )
+
+    conn.execute(
+        text(
+            """
+UPDATE stocks
+SET instrument_id = (
+  SELECT i.id
+  FROM instruments i
+  WHERE i.instrument_type = CASE
+      WHEN stocks.market = 'CN_FUT' THEN 'future'
+      WHEN stocks.market = 'CN_OPT' THEN 'option'
+      ELSE 'equity'
+    END
+    AND i.market = stocks.market
+    AND i.symbol = stocks.symbol
+  LIMIT 1
+)
+WHERE instrument_id IS NULL
+"""
+        )
+    )
+
+
+def _delete_where_if_table(conn: Connection, table: str, where: str) -> None:
+    if not _has_table(conn, table):
+        return
+    conn.execute(text(f"DELETE FROM {table} WHERE {where}"))
+
+
+def _m119_cn_only_cleanup(conn: Connection) -> None:
+    hk_us_stock_market = "stock_market IN ('HK', 'US')"
+    hk_us_market = "market IN ('HK', 'US')"
+
+    _delete_where_if_table(
+        conn,
+        "price_alert_hits",
+        "rule_id IN (SELECT id FROM price_alert_rules WHERE stock_id IN (SELECT id FROM stocks WHERE market IN ('HK', 'US'))) "
+        "OR stock_id IN (SELECT id FROM stocks WHERE market IN ('HK', 'US'))",
+    )
+    _delete_where_if_table(
+        conn,
+        "price_alert_rules",
+        "stock_id IN (SELECT id FROM stocks WHERE market IN ('HK', 'US'))",
+    )
+    _delete_where_if_table(
+        conn,
+        "stock_agents",
+        "stock_id IN (SELECT id FROM stocks WHERE market IN ('HK', 'US'))",
+    )
+    _delete_where_if_table(
+        conn,
+        "positions",
+        "stock_id IN (SELECT id FROM stocks WHERE market IN ('HK', 'US'))",
+    )
+    _delete_where_if_table(conn, "paper_trading_positions", hk_us_stock_market)
+    _delete_where_if_table(conn, "paper_trading_trades", hk_us_stock_market)
+    _delete_where_if_table(conn, "stock_context_snapshots", hk_us_market)
+    _delete_where_if_table(conn, "agent_prediction_outcomes", hk_us_stock_market)
+    _delete_where_if_table(conn, "stock_suggestions", hk_us_stock_market)
+    _delete_where_if_table(conn, "market_scan_snapshots", hk_us_stock_market)
+    _delete_where_if_table(conn, "entry_candidate_feedback", hk_us_stock_market)
+    _delete_where_if_table(conn, "entry_candidate_outcomes", hk_us_stock_market)
+    _delete_where_if_table(conn, "entry_candidates", hk_us_stock_market)
+    _delete_where_if_table(conn, "strategy_factor_snapshots", hk_us_stock_market)
+    _delete_where_if_table(conn, "strategy_signal_outcomes", hk_us_stock_market)
+    _delete_where_if_table(conn, "strategy_signal_runs", hk_us_stock_market)
+    _delete_where_if_table(conn, "market_regime_snapshots", hk_us_market)
+    _delete_where_if_table(conn, "portfolio_risk_snapshots", hk_us_market)
+    _delete_where_if_table(conn, "strategy_weights", hk_us_market)
+    _delete_where_if_table(conn, "strategy_weight_history", hk_us_market)
+    _delete_where_if_table(conn, "chat_conversations", hk_us_stock_market)
+    _delete_where_if_table(conn, "stocks", hk_us_market)
+    _delete_where_if_table(conn, "instruments", hk_us_market)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(101, "agent_config_kind_and_visibility", _m101_agent_config_kind),
     Migration(102, "backfill_agent_kind_data", _m102_backfill_agent_kind),
@@ -1551,6 +1748,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(115, "paper_trading_excluded_markets", _m115_paper_trading_excluded_markets),
     Migration(116, "chat_tables", _m116_chat_tables),
     Migration(117, "chat_initial_context", _m117_chat_initial_context),
+    Migration(118, "instruments_and_stock_mapping", _m118_instruments_and_stock_mapping),
+    Migration(119, "cn_only_cleanup", _m119_cn_only_cleanup),
 )
 
 

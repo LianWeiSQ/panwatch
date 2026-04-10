@@ -27,9 +27,7 @@ type GroupedSignal = {
   topScore: number
 }
 
-const marketLabel = (m?: string) => {
-  if (m === 'HK') return '港股'
-  if (m === 'US') return '美股'
+const marketLabel = (_m?: string) => {
   return 'A股'
 }
 
@@ -74,7 +72,7 @@ const formatMetric = (value: unknown, digits = 1) => {
 }
 
 const DEFAULT_FILTERS = {
-  market: 'ALL' as const,
+  market: 'CN' as const,
   source: 'all' as const,
   holding: 'unheld' as const,
   strategy: 'all',
@@ -228,7 +226,7 @@ export default function OpportunitiesPage() {
   const [strategyCatalog, setStrategyCatalog] = useState<StrategyCatalogItem[]>([])
   const [watchlist, setWatchlist] = useState<Set<string>>(new Set())
 
-  const [market, setMarket] = useLocalStorage<'ALL' | 'CN' | 'HK' | 'US'>('panwatch_opportunities_market_v3', DEFAULT_FILTERS.market)
+  const [market, setMarket] = useLocalStorage<'CN'>('panwatch_opportunities_market_v3', DEFAULT_FILTERS.market)
   const [source, setSource] = useLocalStorage<SourceFilter>('panwatch_opportunities_source_v3', DEFAULT_FILTERS.source)
   const [holding, setHolding] = useLocalStorage<HoldingFilter>('panwatch_opportunities_holding_v3', DEFAULT_FILTERS.holding)
   const [strategy, setStrategy] = useLocalStorage('panwatch_opportunities_strategy_v3', DEFAULT_FILTERS.strategy)
@@ -286,7 +284,7 @@ export default function OpportunitiesPage() {
         status: 'active' as const,
         source_pool: source,
         holding,
-        market: market === 'ALL' ? '' : market,
+        market,
         strategy_code: strategy === 'all' ? '' : strategy,
         risk_level: risk,
         min_score: Number(minScore) || 0,
@@ -327,17 +325,6 @@ export default function OpportunitiesPage() {
             items: (fallback.items || []).map(toSignalFromCandidate),
           }
           setError('策略层请求超时，已降级展示候选快照')
-        }
-      }
-      if ((!data.items || data.items.length === 0) && market !== 'ALL') {
-        const fallback = await recommendationsApi.listStrategySignals({
-          ...req,
-          market: '',
-          timeoutMs: 45000,
-        })
-        if (fallback.items && fallback.items.length > 0) {
-          setError(`当前${marketLabel(market)}暂无满足条件机会，已展示全市场结果`)
-          data = fallback
         }
       }
       setItems(data.items || [])
@@ -621,13 +608,10 @@ export default function OpportunitiesPage() {
 
       <div className="card p-3 md:p-4 mb-4">
         <div className="grid grid-cols-2 md:grid-cols-8 gap-2">
-          <Select value={market} onValueChange={(v) => setMarket(v as 'ALL' | 'CN' | 'HK' | 'US')}>
+          <Select value={market} onValueChange={(v) => setMarket(v as 'CN')}>
             <SelectTrigger className="h-8 text-[12px]"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="ALL">全部市场</SelectItem>
               <SelectItem value="CN">A股</SelectItem>
-              <SelectItem value="HK">港股</SelectItem>
-              <SelectItem value="US">美股</SelectItem>
             </SelectContent>
           </Select>
           <Select value={source} onValueChange={(v) => setSource(v as SourceFilter)}>

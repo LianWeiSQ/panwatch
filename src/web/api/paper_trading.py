@@ -327,7 +327,7 @@ def update_settings(body: UpdateSettingsBody, db: Session = Depends(get_db)):
     if not acc:
         raise HTTPException(404, "模拟盘账户不存在")
     if body.excluded_markets is not None:
-        valid = {"CN", "HK", "US"}
+        valid = {"CN"}
         acc.excluded_markets = [m for m in body.excluded_markets if m in valid]
     db.commit()
     db.refresh(acc)

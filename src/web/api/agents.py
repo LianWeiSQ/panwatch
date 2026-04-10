@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
+from src.core.market_data import market_data
 from src.web.database import get_db
 from src.web.models import AgentConfig, AgentRun
 from src.core.schedule_parser import preview_schedule
@@ -436,8 +437,6 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
         load_portfolio_for_agent,
         build_context,
     )
-    from src.collectors.akshare_collector import AkshareCollector
-    from src.collectors.kline_collector import KlineCollector
     from src.models.market import MarketCode, MARKETS
     from src.agents.intraday_monitor import IntradayMonitorAgent
     from src.core.analysis_history import get_latest_analysis, get_analysis
@@ -484,27 +483,15 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
     portfolio = load_portfolio_for_agent(agent_name)
 
     # 按市场分组采集行情
-    market_symbols: dict[MarketCode, list] = {}
     stock_market_map: dict[str, MarketCode] = {}
     for stock in active_watchlist:
-        market_symbols.setdefault(stock.market, []).append(stock.symbol)
         stock_market_map[stock.symbol] = stock.market
 
-    async def _fetch_market_quotes(market_code: MarketCode, symbols: list[str]):
-        try:
-            collector = AkshareCollector(market_code)
-            return await collector.get_stock_data(symbols)
-        except Exception as e:
-            logger.error(f"采集 {market_code.value} 行情失败: {e}")
-            return []
-
-    quote_batches = await asyncio.gather(
-        *[
-            _fetch_market_quotes(market_code, symbols)
-            for market_code, symbols in market_symbols.items()
-        ]
-    )
-    all_quotes = [q for batch in quote_batches for q in (batch or [])]
+    quote_items = [
+        {"symbol": stock.symbol, "market": stock.market.value}
+        for stock in active_watchlist
+    ]
+    all_quotes = await asyncio.to_thread(market_data.get_stock_data_batch, quote_items)
     quote_by_symbol = {q.symbol: q for q in all_quotes}
 
     # 解析 Agent 阈值配置（用于异动标记与提示 AI）
@@ -572,17 +559,11 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
                 pass
 
     # 构建返回数据
-    kline_sem = asyncio.Semaphore(6)
-
-    async def _load_kline_summary(symbol: str, market: MarketCode):
-        try:
-            async with kline_sem:
-                return await asyncio.to_thread(
-                    lambda: KlineCollector(market).get_kline_summary(symbol)
-                )
-        except Exception as e:
-            logger.warning(f"获取 {symbol} K线失败: {e}")
-            return None
+    kline_rows = await asyncio.to_thread(market_data.get_kline_summary_batch, quote_items)
+    kline_summary_map = {
+        f"{str(row.get('market') or 'CN').upper()}:{str(row.get('symbol') or '').upper()}": row.get("summary")
+        for row in (kline_rows or [])
+    }
 
     async def _build_result_item(quote):
         change_pct = quote.change_pct or 0
@@ -598,7 +579,7 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
             pnl_pct = (quote.current_price - cost_price) / cost_price * 100
 
         # 获取技术分析（并发）
-        kline_summary = await _load_kline_summary(quote.symbol, market)
+        kline_summary = kline_summary_map.get(f"{market.value}:{quote.symbol}")
 
         # 判断异动类型
         alert_type = None
