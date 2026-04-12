@@ -235,7 +235,13 @@ function App() {
       </nav>
 
       {/* Content */}
-      <main className={`px-4 py-4 md:py-6 w-full transition-[margin-left] duration-300 ease-in-out ${sidebarCollapsed ? 'md:ml-16' : 'md:ml-60'}`}>
+      <main
+        className={`min-w-0 px-4 py-4 md:py-6 transition-[margin-left,width] duration-300 ease-in-out ${
+          sidebarCollapsed
+            ? 'md:ml-16 md:w-[calc(100%-4rem)]'
+            : 'md:ml-60 md:w-[calc(100%-15rem)]'
+        }`}
+      >
         <Suspense fallback={routeFallback}>
           <Routes>
             <Route path="/" element={<DashboardPage />} />
