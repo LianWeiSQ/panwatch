@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
+from src.config import Settings
 from src.web.database import SessionLocal
 from src.web.models import DataSource
 from src.models.market import MarketCode
@@ -466,9 +467,9 @@ class DataCollectorManager:
                 )
             elif source.provider == "tushare":
                 cfg = source.config or {}
-                token = str(cfg.get("token") or "").strip()
+                token = str(cfg.get("token") or Settings().tushare_token or "").strip()
                 if not token:
-                    return CollectorResult(success=False, error="请先配置 Tushare token")
+                    return CollectorResult(success=False, error="请先配置 Tushare token，或在 .env 中填写 TUSHARE_TOKEN")
                 collector = TushareNewsCollector(
                     token=token,
                     endpoint=str(cfg.get("endpoint") or "news"),

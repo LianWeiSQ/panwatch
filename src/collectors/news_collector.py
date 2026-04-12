@@ -56,6 +56,14 @@ def _hash_text(*parts: str) -> str:
     return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
 
 
+def _with_env_defaults(provider: str, config: dict | None) -> dict:
+    merged = dict(config or {})
+    settings = Settings()
+    if provider == "tushare" and not str(merged.get("token") or "").strip():
+        merged["token"] = settings.tushare_token
+    return merged
+
+
 def _parse_time(value) -> datetime:
     if isinstance(value, datetime):
         return value.replace(tzinfo=None) if value.tzinfo else value
@@ -716,7 +724,7 @@ class NewsCollector:
                 if not factory:
                     continue
                 try:
-                    collector = factory(ds.config or {}, ds.name)
+                    collector = factory(_with_env_defaults(ds.provider, ds.config), ds.name)
                     if ds.provider == "rss_feed" and not getattr(collector, "feed_url", ""):
                         continue
                     collectors.append(collector)

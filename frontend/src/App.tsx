@@ -1,11 +1,13 @@
 import { Suspense, lazy, useState, useEffect, useRef } from 'react'
 import { Routes, Route, NavLink, useLocation, Navigate } from 'react-router-dom'
-import { Moon, Sun, TrendingUp, Bot, ScrollText, Settings, List, Database, Clock, LayoutDashboard, LogOut, Github, BellRing, MoreHorizontal, Sparkles, Activity, Newspaper } from 'lucide-react'
+import { Moon, Sun, TrendingUp, MoreHorizontal, Github, ScrollText } from 'lucide-react'
 import { useTheme } from '@/hooks/use-theme'
 import { appApi, fetchAPI, isAuthenticated, logout } from '@panwatch/api'
 import LogsModal from '@panwatch/biz-ui/components/logs-modal'
 import AmbientBackground from '@panwatch/biz-ui/components/AmbientBackground'
 import ChatWidget from '@/components/ChatWidget'
+import Sidebar, { navItems } from '@/components/Sidebar'
+import { useLocalStorage } from '@/lib/utils'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@panwatch/base-ui/components/ui/dialog'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 
@@ -21,20 +23,6 @@ const PriceAlertsPage = lazy(() => import('@/pages/PriceAlerts'))
 const PaperTradingPage = lazy(() => import('@/pages/PaperTrading'))
 const LoginPage = lazy(() => import('@/pages/Login'))
 
-const navItems = [
-  { to: '/', icon: LayoutDashboard, label: '首页' },
-  { to: '/portfolio', icon: List, label: '持仓' },
-  { to: '/opportunities', icon: Sparkles, label: '机会' },
-  { to: '/alerts', icon: BellRing, label: '提醒' },
-  { to: '/paper-trading', icon: Activity, label: '模拟盘' },
-  { to: '/agents', icon: Bot, label: 'Agent' },
-  { to: '/history', icon: Clock, label: '历史' },
-  { to: '/news-analysis', icon: Newspaper, label: '新闻分析' },
-  { to: '/datasources', icon: Database, label: '数据源' },
-  { to: '/settings', icon: Settings, label: '设置' },
-]
-const desktopPrimaryNavItems = [navItems[0], navItems[1], navItems[2], navItems[3]]
-const desktopMoreNavItems = [navItems[4], navItems[5], navItems[6], navItems[7], navItems[8], navItems[9]]
 const mobilePrimaryNavItems = [navItems[0], navItems[1], navItems[2], navItems[3]]
 const mobileMoreNavItems = [navItems[4], navItems[5], navItems[6], navItems[7], navItems[8], navItems[9]]
 
@@ -76,10 +64,9 @@ function App() {
   const [logsOpen, setLogsOpen] = useState(false)
   const [upgradeOpen, setUpgradeOpen] = useState(false)
   const [upgradeInfo, setUpgradeInfo] = useState<{ latest: string; url: string } | null>(null)
-  const [desktopMoreOpen, setDesktopMoreOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useLocalStorage<boolean>('panwatch-sidebar-collapsed', false)
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const checkedUpdateRef = useRef(false)
-  const desktopMoreRef = useRef<HTMLDivElement | null>(null)
   const mobileMoreRef = useRef<HTMLDivElement | null>(null)
   const repoUrl = 'https://github.com/TNT-Likely/PanWatch'
   const routeFallback = (
@@ -117,19 +104,15 @@ function App() {
   useEffect(() => {
     const onDocPointerDown = (e: PointerEvent) => {
       const t = e.target as Node
-      if (desktopMoreOpen && desktopMoreRef.current && !desktopMoreRef.current.contains(t)) {
-        setDesktopMoreOpen(false)
-      }
       if (mobileMoreOpen && mobileMoreRef.current && !mobileMoreRef.current.contains(t)) {
         setMobileMoreOpen(false)
       }
     }
     document.addEventListener('pointerdown', onDocPointerDown)
     return () => document.removeEventListener('pointerdown', onDocPointerDown)
-  }, [desktopMoreOpen, mobileMoreOpen])
+  }, [mobileMoreOpen])
 
   useEffect(() => {
-    setDesktopMoreOpen(false)
     setMobileMoreOpen(false)
   }, [location.pathname])
 
@@ -148,120 +131,16 @@ function App() {
     <RequireAuth>
     <div className="min-h-screen pb-16 md:pb-0 relative overflow-x-clip bg-background">
       <AmbientBackground />
-      {/* Desktop Floating Nav */}
-      <div className="sticky top-0 z-50 px-4 md:px-6 pt-3 md:pt-4 pb-2 hidden md:block">
-        <header className="card px-4 md:px-5">
-          <div className="h-14 flex items-center justify-between">
-            {/* Logo */}
-            <NavLink to="/" className="flex items-center gap-2.5 group">
-              <div className="w-8 h-8 rounded-2xl bg-gradient-to-br from-primary to-primary/70 flex items-center justify-center shadow-sm">
-                <TrendingUp className="w-4 h-4 text-white" />
-              </div>
-              <span className="text-[15px] font-bold text-foreground">PanWatch</span>
-              {version && <span className="text-[11px] text-muted-foreground/60 font-normal">v{version}</span>}
-            </NavLink>
-
-            {/* Nav Links */}
-            <nav className="flex items-center gap-1">
-              {desktopPrimaryNavItems.map(({ to, icon: Icon, label }) => {
-                const isActive = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
-                return (
-                  <NavLink
-                    key={to}
-                    to={to}
-                    className="relative"
-                  >
-                    <span
-                      className={`absolute inset-0 rounded-xl transition-all ${
-                        isActive
-                          ? 'bg-[linear-gradient(135deg,hsl(var(--primary)/0.14),hsl(var(--primary)/0.04),hsl(var(--success)/0.06))] ring-1 ring-primary/20 shadow-[0_8px_24px_-18px_hsl(var(--primary)/0.55)]'
-                          : 'bg-transparent'
-                      }`}
-                    />
-                    <span
-                      className={`relative px-3.5 py-2 rounded-xl text-[13px] font-medium transition-all flex items-center gap-1.5 ${
-                        isActive
-                          ? 'text-foreground'
-                          : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-                      }`}
-                    >
-                      <Icon className={`w-4 h-4 ${isActive ? 'text-primary' : ''}`} />
-                      {label}
-                    </span>
-                  </NavLink>
-                )
-              })}
-              <div className="relative" ref={desktopMoreRef}>
-                <button
-                  onClick={() => setDesktopMoreOpen(v => !v)}
-                  className={`relative px-3.5 py-2 rounded-xl text-[13px] font-medium transition-all flex items-center gap-1.5 ${
-                    desktopMoreNavItems.some(item => location.pathname.startsWith(item.to))
-                      ? 'text-foreground bg-[linear-gradient(135deg,hsl(var(--primary)/0.14),hsl(var(--primary)/0.04),hsl(var(--success)/0.06))] ring-1 ring-primary/20 shadow-[0_8px_24px_-18px_hsl(var(--primary)/0.55)]'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-                  }`}
-                >
-                  <MoreHorizontal className="w-4 h-4" />
-                  更多
-                </button>
-                {desktopMoreOpen && (
-                  <div className="absolute right-0 mt-2 w-40 rounded-xl border border-border/60 bg-card/95 backdrop-blur p-1.5 shadow-xl">
-                    {desktopMoreNavItems.map(({ to, icon: Icon, label }) => {
-                      const isActive = location.pathname.startsWith(to)
-                      return (
-                        <NavLink
-                          key={to}
-                          to={to}
-                          onClick={() => setDesktopMoreOpen(false)}
-                          className={`flex items-center gap-2 px-2.5 py-2 rounded-lg text-[12px] transition-colors ${
-                            isActive ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-accent/60'
-                          }`}
-                        >
-                          <Icon className="w-3.5 h-3.5" />
-                          {label}
-                        </NavLink>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            </nav>
-
-            {/* Theme Toggle & Logout */}
-            <div className="flex items-center gap-1.5 px-1.5 py-1 rounded-2xl bg-accent/20 border border-border/40">
-              <button
-                onClick={() => window.open(repoUrl, '_blank', 'noopener,noreferrer')}
-                className="w-9 h-9 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-background/70 transition-all"
-                title="GitHub 项目"
-              >
-                <Github className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setLogsOpen(true)}
-                className="w-9 h-9 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-background/70 transition-all"
-                title="查看日志"
-              >
-                <ScrollText className="w-4 h-4" />
-              </button>
-              <button
-                onClick={toggleTheme}
-                className="w-9 h-9 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-background/70 transition-all"
-                title={theme === 'dark' ? '切换到亮色' : '切换到暗色'}
-              >
-                {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-              </button>
-              {isAuthenticated() && (
-                <button
-                  onClick={logout}
-                  className="w-9 h-9 rounded-xl flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
-                  title="退出登录"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          </div>
-        </header>
-      </div>
+      {/* Desktop Sidebar */}
+      <Sidebar
+        version={version}
+        theme={theme}
+        collapsed={sidebarCollapsed}
+        onToggleTheme={toggleTheme}
+        onToggleCollapse={() => setSidebarCollapsed(v => !v)}
+        onOpenLogs={() => setLogsOpen(true)}
+        onLogout={logout}
+      />
 
       {/* Mobile Top Bar */}
       <div className="sticky top-0 z-50 px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-2 md:hidden">
@@ -356,7 +235,7 @@ function App() {
       </nav>
 
       {/* Content */}
-      <main className="px-4 md:px-6 py-4 md:py-6 w-full">
+      <main className={`px-4 py-4 md:py-6 w-full transition-[margin-left] duration-300 ease-in-out ${sidebarCollapsed ? 'md:ml-16' : 'md:ml-60'}`}>
         <Suspense fallback={routeFallback}>
           <Routes>
             <Route path="/" element={<DashboardPage />} />

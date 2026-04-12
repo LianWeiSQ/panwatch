@@ -82,6 +82,13 @@ def test_rss_feed_missing_pub_date_falls_back_to_now():
     assert item.title == "Missing Date"
 
 
+def test_tushare_collector_uses_env_token_when_config_is_empty(monkeypatch):
+    monkeypatch.setenv("TUSHARE_TOKEN", "env-token")
+    collector = news_analysis_module.NewsCollector.COLLECTOR_MAP["tushare"]({}, "Tushare")
+
+    assert getattr(collector, "token", "") == "env-token"
+
+
 def test_dedupe_items_uses_hash_fallback():
     payload = {"url_hash": "same-url", "title_hash": "same-title"}
     items = [

@@ -96,7 +96,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("TZ", "APP_TIMEZONE"),
     )
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 @dataclass
