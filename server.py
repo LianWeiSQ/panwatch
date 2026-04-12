@@ -269,6 +269,15 @@ def seed_agents():
                 if isinstance(cfg, dict) and "event_only" not in cfg:
                     cfg["event_only"] = True
                     existing.config = cfg
+            if existing.name == "news_digest":
+                cfg = existing.config or {}
+                if isinstance(cfg, dict):
+                    cfg.setdefault("lookback_hours", 24)
+                    cfg.setdefault("max_items_per_source", 40)
+                    cfg.setdefault("top_n_for_ai", 24)
+                    cfg.setdefault("translate_english", True)
+                    cfg.setdefault("watchlist_boost", 1.5)
+                    existing.config = cfg
 
     db.commit()
     db.close()
@@ -311,6 +320,112 @@ def seed_data_sources():
             "priority": 2,
             "supports_batch": True,  # 支持批量查询
             "test_symbols": ["601127", "600519"],
+        },
+        {
+            "name": "华尔街见闻",
+            "type": "news",
+            "provider": "rss_feed",
+            "config": {
+                "feed_url": "https://rsshub.app/wallstreetcn/news/global",
+                "language": "zh",
+                "fetch_limit": 40,
+                "timeout_s": 12,
+            },
+            "enabled": True,
+            "priority": 10,
+            "supports_batch": True,
+            "test_symbols": [],
+        },
+        {
+            "name": "FT中文网",
+            "type": "news",
+            "provider": "rss_feed",
+            "config": {
+                "feed_url": "https://rsshub.app/ft/chinese",
+                "language": "zh",
+                "fetch_limit": 40,
+                "timeout_s": 12,
+            },
+            "enabled": True,
+            "priority": 11,
+            "supports_batch": True,
+            "test_symbols": [],
+        },
+        {
+            "name": "Financial Times",
+            "type": "news",
+            "provider": "rss_feed",
+            "config": {
+                "feed_url": "https://www.ft.com/rss/home",
+                "language": "en",
+                "fetch_limit": 40,
+                "timeout_s": 12,
+            },
+            "enabled": True,
+            "priority": 12,
+            "supports_batch": True,
+            "test_symbols": [],
+        },
+        {
+            "name": "Bloomberg",
+            "type": "news",
+            "provider": "rss_feed",
+            "config": {
+                "feed_url": "https://feeds.bloomberg.com/markets/news.rss",
+                "language": "en",
+                "fetch_limit": 40,
+                "timeout_s": 12,
+            },
+            "enabled": True,
+            "priority": 13,
+            "supports_batch": True,
+            "test_symbols": [],
+        },
+        {
+            "name": "Reuters Business",
+            "type": "news",
+            "provider": "rss_feed",
+            "config": {
+                "feed_url": "https://feeds.reuters.com/reuters/businessNews",
+                "language": "en",
+                "fetch_limit": 40,
+                "timeout_s": 12,
+            },
+            "enabled": True,
+            "priority": 14,
+            "supports_batch": True,
+            "test_symbols": [],
+        },
+        {
+            "name": "The Economist",
+            "type": "news",
+            "provider": "rss_feed",
+            "config": {
+                "feed_url": "https://www.economist.com/rss/the-world-this-week.rdf",
+                "language": "en",
+                "fetch_limit": 40,
+                "timeout_s": 12,
+            },
+            "enabled": True,
+            "priority": 15,
+            "supports_batch": True,
+            "test_symbols": [],
+        },
+        {
+            "name": "Tushare 新闻",
+            "type": "news",
+            "provider": "tushare",
+            "config": {
+                "token": "",
+                "endpoint": "news",
+                "src": "",
+                "fetch_limit": 40,
+                "timeout_s": 15,
+            },
+            "enabled": False,
+            "priority": 16,
+            "supports_batch": True,
+            "test_symbols": [],
         },
         # K线数据源
         {
@@ -400,6 +515,8 @@ def seed_data_sources():
                 existing.supports_batch = source_data.get("supports_batch", False)
             if not existing.test_symbols:  # 只在空时更新
                 existing.test_symbols = source_data.get("test_symbols", [])
+            if not existing.config:
+                existing.config = source_data.get("config", {})
         else:
             db.add(DataSource(**source_data))
 
@@ -913,7 +1030,7 @@ async def trigger_agent(agent_name: str) -> str:
         logger.info(
             f"[watchlist] Agent={agent_name} count={len(watchlist)} symbols={[s.symbol for s in watchlist]}"
         )
-        if not watchlist:
+        if not watchlist and agent_name != "news_digest":
             return f"Agent {agent_name} 没有关联的自选股"
 
         model, service = resolve_ai_model(agent_name)

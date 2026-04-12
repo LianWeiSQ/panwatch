@@ -15,13 +15,11 @@ AGENT_KIND_CAPABILITY = "capability"
 WORKFLOW_AGENT_NAMES: tuple[str, ...] = (
     "premarket_outlook",
     "intraday_monitor",
+    "news_digest",
     "daily_report",
 )
 
-CAPABILITY_AGENT_NAMES: tuple[str, ...] = (
-    "news_digest",
-    "chart_analyst",
-)
+CAPABILITY_AGENT_NAMES: tuple[str, ...] = ("chart_analyst",)
 
 
 def infer_agent_kind(agent_name: str | None) -> str:
@@ -59,7 +57,7 @@ AGENT_SEED_SPECS: tuple[AgentSeedSpec, ...] = (
     AgentSeedSpec(
         name="premarket_outlook",
         display_name="盘前分析",
-        description="开盘前综合昨日分析和隔夜信息，展望今日走势",
+        description="开盘前综合隔夜信息与组合上下文，输出当日关注方向",
         enabled=False,
         schedule="0 9 * * 1-5",
         execution_mode="batch",
@@ -70,7 +68,7 @@ AGENT_SEED_SPECS: tuple[AgentSeedSpec, ...] = (
     AgentSeedSpec(
         name="intraday_monitor",
         display_name="盘中监测",
-        description="交易时段实时监控，AI 智能判断是否有值得关注的信号",
+        description="交易时段实时监控，识别值得关注的异动与风险信号",
         enabled=False,
         schedule="*/5 9-15 * * 1-5",
         execution_mode="single",
@@ -87,6 +85,24 @@ AGENT_SEED_SPECS: tuple[AgentSeedSpec, ...] = (
         },
     ),
     AgentSeedSpec(
+        name="news_digest",
+        display_name="新闻分析",
+        description="多源新闻汇总、主题提炼、情绪判断与自选股/持仓关联分析",
+        enabled=False,
+        schedule="0 */2 * * *",
+        execution_mode="batch",
+        kind=AGENT_KIND_WORKFLOW,
+        visible=True,
+        display_order=25,
+        config={
+            "lookback_hours": 24,
+            "max_items_per_source": 40,
+            "top_n_for_ai": 24,
+            "translate_english": True,
+            "watchlist_boost": 1.5,
+        },
+    ),
+    AgentSeedSpec(
         name="daily_report",
         display_name="收盘复盘",
         description="每日收盘后生成复盘报告，包含市场回顾、个股复盘和次日关注",
@@ -96,23 +112,6 @@ AGENT_SEED_SPECS: tuple[AgentSeedSpec, ...] = (
         kind=AGENT_KIND_WORKFLOW,
         visible=True,
         display_order=30,
-    ),
-    AgentSeedSpec(
-        name="news_digest",
-        display_name="新闻速递（能力）",
-        description="内部能力：提供新闻抓取、去重与主题聚合，不独立调度",
-        enabled=False,
-        schedule="",
-        execution_mode="batch",
-        kind=AGENT_KIND_CAPABILITY,
-        visible=False,
-        lifecycle_status="deprecated",
-        replaced_by="premarket_outlook,daily_report,intraday_monitor",
-        display_order=110,
-        config={
-            "since_hours": 12,
-            "fallback_since_hours": 24,
-        },
     ),
     AgentSeedSpec(
         name="chart_analyst",
@@ -128,4 +127,3 @@ AGENT_SEED_SPECS: tuple[AgentSeedSpec, ...] = (
         display_order=120,
     ),
 )
-

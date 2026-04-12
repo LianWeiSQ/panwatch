@@ -11,6 +11,8 @@ from src.collectors.news_collector import NewsCollector, NewsItem
 
 router = APIRouter()
 
+LEGACY_NEWS_PROVIDERS = {"xueqiu", "eastmoney_news", "eastmoney"}
+
 # 来源显示名称
 SOURCE_LABELS = {
     "xueqiu": "雪球",
@@ -82,7 +84,7 @@ async def get_news(
             keywords.add(stock_map[sym])
 
     # 基于数据源配置构建采集器，直接传递股票名称映射避免重复查库
-    collector = NewsCollector.from_database()
+    collector = NewsCollector.from_database(provider_allowlist=LEGACY_NEWS_PROVIDERS)
     news_items = await collector.fetch_all(
         symbols=symbol_list,
         since_hours=hours,

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Clock, Trash2, FileText, ArrowLeft } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
+import { useLocation } from 'react-router-dom'
 import { fetchAPI } from '@panwatch/api'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Badge } from '@panwatch/base-ui/components/ui/badge'
@@ -28,19 +29,23 @@ const AGENT_LABELS: Record<string, string> = {
   daily_report: '收盘复盘',
   premarket_outlook: '盘前分析',
   intraday_monitor: '盘中监测',
-  news_digest: '新闻速递',
+  news_digest: '新闻分析',
   chart_analyst: '技术分析',
 }
 
-const WORKFLOW_AGENT_KEYS = ['daily_report', 'premarket_outlook', 'intraday_monitor']
-const CAPABILITY_AGENT_KEYS = ['news_digest', 'chart_analyst']
+const WORKFLOW_AGENT_KEYS = ['daily_report', 'premarket_outlook', 'intraday_monitor', 'news_digest']
+const CAPABILITY_AGENT_KEYS = ['chart_analyst']
 
 export default function HistoryPage() {
+  const location = useLocation()
   const { toast } = useToast()
+  const initialParams = new URLSearchParams(location.search)
   const [records, setRecords] = useState<HistoryRecord[]>([])
   const [loading, setLoading] = useState(true)
-  const [selectedAgent, setSelectedAgent] = useState<string>('all')
-  const [historyKind, setHistoryKind] = useState<'workflow' | 'capability' | 'all'>('workflow')
+  const [selectedAgent, setSelectedAgent] = useState<string>(initialParams.get('agent_name') || 'all')
+  const [historyKind, setHistoryKind] = useState<'workflow' | 'capability' | 'all'>(
+    (initialParams.get('kind') as 'workflow' | 'capability' | 'all') || 'workflow'
+  )
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [mobileView, setMobileView] = useState<'list' | 'reader'>('list')
   const [detailRecord, setDetailRecord] = useState<HistoryRecord | null>(null)
@@ -95,6 +100,14 @@ export default function HistoryPage() {
   }
 
   useEffect(() => { load() }, [selectedAgent, historyKind])
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const nextAgent = params.get('agent_name') || 'all'
+    const nextKind = (params.get('kind') as 'workflow' | 'capability' | 'all') || 'workflow'
+    setSelectedAgent(nextAgent)
+    setHistoryKind(nextKind)
+  }, [location.search])
 
   useEffect(() => {
     const available = historyKind === 'workflow'

@@ -1730,6 +1730,112 @@ def _m119_cn_only_cleanup(conn: Connection) -> None:
     _delete_where_if_table(conn, "instruments", hk_us_market)
 
 
+def _m120_news_analysis_tables(conn: Connection) -> None:
+    conn.execute(
+        text(
+            """
+CREATE TABLE IF NOT EXISTS news_articles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL,
+  source_name TEXT NOT NULL DEFAULT '',
+  external_id TEXT NOT NULL DEFAULT '',
+  language TEXT NOT NULL DEFAULT 'zh',
+  title TEXT NOT NULL,
+  summary TEXT DEFAULT '',
+  content TEXT DEFAULT '',
+  cn_summary TEXT DEFAULT '',
+  url TEXT DEFAULT '',
+  url_hash TEXT NOT NULL DEFAULT '',
+  title_hash TEXT NOT NULL DEFAULT '',
+  published_at DATETIME NOT NULL,
+  fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  symbols TEXT DEFAULT '[]',
+  relevance_score REAL DEFAULT 0.0,
+  payload TEXT DEFAULT '{}',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uq_news_articles_provider_external UNIQUE(provider, external_id),
+  CONSTRAINT uq_news_articles_provider_url_title UNIQUE(provider, url_hash, title_hash)
+)
+"""
+        )
+    )
+    _create_index_if_missing(
+        conn,
+        "ix_news_articles_published",
+        "CREATE INDEX ix_news_articles_published ON news_articles(published_at)",
+    )
+    _create_index_if_missing(
+        conn,
+        "ix_news_articles_language",
+        "CREATE INDEX ix_news_articles_language ON news_articles(language, published_at)",
+    )
+    _create_index_if_missing(
+        conn,
+        "ix_news_articles_relevance",
+        "CREATE INDEX ix_news_articles_relevance ON news_articles(relevance_score, published_at)",
+    )
+
+    conn.execute(
+        text(
+            """
+CREATE TABLE IF NOT EXISTS news_source_status (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL UNIQUE,
+  source_name TEXT NOT NULL DEFAULT '',
+  enabled INTEGER DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'idle',
+  last_success_at DATETIME,
+  last_attempt_at DATETIME,
+  last_error TEXT DEFAULT '',
+  article_count INTEGER DEFAULT 0,
+  meta TEXT DEFAULT '{}',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+"""
+        )
+    )
+
+
+def _m121_restore_news_digest_workflow(conn: Connection) -> None:
+    if not _has_table(conn, "agent_configs"):
+        return
+
+    conn.execute(
+        text(
+            """
+UPDATE agent_configs
+SET kind = 'workflow',
+    visible = 1,
+    lifecycle_status = 'active',
+    replaced_by = '',
+    display_order = 25,
+    schedule = CASE
+      WHEN schedule IS NULL OR TRIM(schedule) = '' THEN '0 */2 * * *'
+      ELSE schedule
+    END,
+    config = CASE
+      WHEN config IS NULL OR TRIM(config) = '' OR config = '{}' THEN
+        '{"lookback_hours": 24, "max_items_per_source": 40, "top_n_for_ai": 24, "translate_english": true, "watchlist_boost": 1.5}'
+      ELSE config
+    END
+WHERE name = 'news_digest'
+"""
+        )
+    )
+
+    conn.execute(
+        text(
+            """
+UPDATE analysis_history
+SET agent_kind_snapshot = 'workflow'
+WHERE agent_name = 'news_digest'
+"""
+        )
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(101, "agent_config_kind_and_visibility", _m101_agent_config_kind),
     Migration(102, "backfill_agent_kind_data", _m102_backfill_agent_kind),
@@ -1750,6 +1856,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(117, "chat_initial_context", _m117_chat_initial_context),
     Migration(118, "instruments_and_stock_mapping", _m118_instruments_and_stock_mapping),
     Migration(119, "cn_only_cleanup", _m119_cn_only_cleanup),
+    Migration(120, "news_analysis_tables", _m120_news_analysis_tables),
+    Migration(121, "restore_news_digest_workflow", _m121_restore_news_digest_workflow),
 )
 
 

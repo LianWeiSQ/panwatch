@@ -1,108 +1,183 @@
-"""新闻采集器 - 雪球 + 东方财富"""
-import logging
-import re
-from abc import ABC, abstractmethod
+"""News collectors for stock-specific and global news sources."""
+
+from __future__ import annotations
+
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from functools import lru_cache
-import asyncio
+from email.utils import parsedate_to_datetime
+import hashlib
+import html
+import json
+import logging
+import re
+import xml.etree.ElementTree as ET
+from abc import ABC, abstractmethod
 
 import httpx
+try:
+    import tushare as ts
+except Exception:  # pragma: no cover - optional dependency
+    ts = None
 
+from src.config import Settings
 from src.core.cn_symbol import get_cn_prefix
 
 logger = logging.getLogger(__name__)
 
-# 简单内存缓存（5分钟过期）
-_news_cache: dict[str, tuple[datetime, list]] = {}
+_news_cache: dict[str, tuple[datetime, list["NewsItem"]]] = {}
 _cache_ttl = timedelta(minutes=5)
 
 
-def _get_cached(key: str) -> list | None:
-    """获取缓存"""
-    if key in _news_cache:
-        cached_time, data = _news_cache[key]
-        if datetime.now() - cached_time < _cache_ttl:
-            return data
-        del _news_cache[key]
-    return None
+def _get_cached(key: str) -> list["NewsItem"] | None:
+    hit = _news_cache.get(key)
+    if not hit:
+        return None
+    cached_time, data = hit
+    if datetime.now() - cached_time > _cache_ttl:
+        _news_cache.pop(key, None)
+        return None
+    return data
 
 
-def _set_cached(key: str, data: list) -> None:
-    """设置缓存"""
+def _set_cached(key: str, data: list["NewsItem"]) -> None:
     _news_cache[key] = (datetime.now(), data)
+
+
+def _clean_text(value: str | None) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _hash_text(*parts: str) -> str:
+    raw = "||".join(str(p or "") for p in parts)
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _parse_time(value) -> datetime:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    if isinstance(value, (int, float)):
+        try:
+            if float(value) > 10_000_000_000:
+                return datetime.fromtimestamp(float(value) / 1000.0)
+            return datetime.fromtimestamp(float(value))
+        except Exception:
+            return datetime.now()
+
+    text = str(value or "").strip()
+    if not text:
+        return datetime.now()
+
+    formats = (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%Y%m%d %H:%M:%S",
+        "%Y%m%d",
+    )
+    for fmt in formats:
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            continue
+
+    try:
+        dt = parsedate_to_datetime(text)
+        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+    except Exception:
+        pass
+
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+    except Exception:
+        return datetime.now()
+
+
+def _importance_from_text(title: str, content: str = "") -> int:
+    text = f"{title} {content}"
+    if any(k in text for k in ("重大", "突发", "独家", "业绩预告", "业绩快报", "年报", "并购", "停牌")):
+        return 3
+    if any(k in text for k in ("快讯", "公告", "研报", "上调", "下调", "回购", "减持", "增持", "利空", "利好")):
+        return 2
+    if any(k in text for k in ("市场", "公司", "财报", "业务", "产品")):
+        return 1
+    return 0
+
+
+def _match_symbols(text: str, symbol_names: dict[str, str] | None) -> list[str]:
+    if not symbol_names:
+        return []
+    matched: list[str] = []
+    haystack = (text or "").upper()
+    for symbol, name in symbol_names.items():
+        if symbol and symbol.upper() in haystack:
+            matched.append(symbol)
+            continue
+        if name and name in text:
+            matched.append(symbol)
+    return matched
 
 
 @dataclass
 class NewsItem:
-    """新闻数据结构"""
-    source: str           # "xueqiu" / "eastmoney_news" / "eastmoney"
-    external_id: str      # 来源侧唯一ID
+    source: str
+    external_id: str
     title: str
     content: str
     publish_time: datetime
-    symbols: list[str] = field(default_factory=list)  # 关联股票代码
-    importance: int = 0   # 0-3 重要性
-    url: str = ""         # 原文链接
+    symbols: list[str] = field(default_factory=list)
+    importance: int = 0
+    url: str = ""
+    source_name: str = ""
+    language: str = "zh"
+    summary: str = ""
+    cn_summary: str = ""
+    payload: dict = field(default_factory=dict)
+    relevance_score: float = 0.0
 
 
 class BaseNewsCollector(ABC):
-    """新闻采集器抽象基类"""
-
     source: str = ""
 
     @abstractmethod
-    async def fetch_news(self, symbols: list[str] | None = None, since: datetime | None = None) -> list[NewsItem]:
-        """
-        获取新闻列表
-
-        Args:
-            symbols: 过滤的股票代码列表（可选）
-            since: 只获取此时间之后的新闻（可选）
-
-        Returns:
-            NewsItem 列表
-        """
+    async def fetch_news(
+        self,
+        symbols: list[str] | None = None,
+        since: datetime | None = None,
+    ) -> list[NewsItem]:
         ...
 
 
 class XueqiuNewsCollector(BaseNewsCollector):
-    """
-    雪球个股新闻采集器
-
-    API: https://xueqiu.com/statuses/stock_timeline.json
-    特点: 新闻聚合质量高，包含资讯+公告，需要登录 cookie
-    """
-
     source = "xueqiu"
-    API_URL = "https://xueqiu.com/statuses/stock_timeline.json"
+    api_url = "https://xueqiu.com/statuses/stock_timeline.json"
 
     def __init__(self, cookies: str = ""):
         self.cookies = cookies
 
-    def _get_symbol_id(self, symbol: str) -> str:
-        """转换为雪球 symbol_id 格式"""
+    def _symbol_id(self, symbol: str) -> str:
         if len(symbol) == 6 and symbol.isdigit():
             prefix = get_cn_prefix(symbol, upper=True)
-            # 雪球 A 股新闻接口仅识别 SH/SZ，BJ 代码保留原值
             if prefix in {"SH", "SZ"}:
                 return f"{prefix}{symbol}"
         return symbol
 
     async def fetch_news(self, symbols: list[str] | None = None, since: datetime | None = None) -> list[NewsItem]:
-        """获取雪球个股新闻（并发请求）"""
         if not symbols:
             return []
-
-        import asyncio
-
-        # 只处理 A 股代码
         a_share_symbols = [s for s in symbols if len(s) == 6 and s.isdigit()]
         if not a_share_symbols:
             return []
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0",
             "Referer": "https://xueqiu.com/",
             "X-Requested-With": "XMLHttpRequest",
         }
@@ -110,127 +185,74 @@ class XueqiuNewsCollector(BaseNewsCollector):
             headers["Cookie"] = self.cookies
 
         async with httpx.AsyncClient(timeout=8, headers=headers) as client:
-            tasks = [self._fetch_for_symbol(client, symbol, since) for symbol in a_share_symbols]
+            tasks = [self._fetch_one(client, symbol, since) for symbol in a_share_symbols]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        all_news = []
+        items: list[NewsItem] = []
         for result in results:
             if isinstance(result, list):
-                all_news.extend(result)
+                items.extend(result)
+        return items
 
-        logger.info(f"雪球新闻采集到 {len(all_news)} 条")
-        return all_news
-
-    async def _fetch_for_symbol(self, client: httpx.AsyncClient, symbol: str, since: datetime | None) -> list[NewsItem]:
-        """获取单只股票的新闻"""
-        symbol_id = self._get_symbol_id(symbol)
-
-        params = {
-            "symbol_id": symbol_id,
-            "count": 15,
-            "source": "自选股新闻",
-            "page": 1,
-        }
-
+    async def _fetch_one(self, client: httpx.AsyncClient, symbol: str, since: datetime | None) -> list[NewsItem]:
         try:
-            resp = await client.get(self.API_URL, params=params)
+            resp = await client.get(
+                self.api_url,
+                params={
+                    "symbol_id": self._symbol_id(symbol),
+                    "count": 15,
+                    "source": "自选股新闻",
+                    "page": 1,
+                },
+            )
             if resp.status_code == 400:
-                # 需要登录，跳过
                 return []
             resp.raise_for_status()
-            data = resp.json()
-
-            items = data.get("list", [])
-            result = []
-
-            for item in items:
-                try:
-                    news = self._parse_item(item, symbol)
-                    if news:
-                        if since and news.publish_time < since:
-                            continue
-                        result.append(news)
-                except Exception as e:
-                    logger.debug(f"解析雪球新闻失败: {e}")
-
-            return result
-
-        except Exception as e:
-            logger.debug(f"雪球新闻采集失败 ({symbol}): {e}")
+            rows = resp.json().get("list", [])
+        except Exception as exc:
+            logger.debug("xueqiu fetch failed for %s: %s", symbol, exc)
             return []
 
-    def _parse_item(self, item: dict, symbol: str) -> NewsItem | None:
-        """解析单条新闻"""
-        external_id = str(item.get("id", ""))
-        if not external_id:
-            return None
-
-        title = item.get("title", "") or item.get("description", "")[:80]
-        if not title:
-            return None
-
-        # 清理 HTML
-        title = re.sub(r"<[^>]+>", "", title).strip()
-        content = item.get("description", "") or ""
-        content = re.sub(r"<[^>]+>", "", content).strip()
-
-        # 解析时间（毫秒时间戳）
-        created_at = item.get("created_at", 0)
-        try:
-            publish_time = datetime.fromtimestamp(created_at / 1000)
-        except (ValueError, TypeError, OSError):
-            publish_time = datetime.now()
-
-        # 重要性判断
-        importance = 0
-        if any(k in title for k in ["重磅", "突发", "紧急", "重大", "独家"]):
-            importance = 2
-        elif any(k in title for k in ["快讯", "公告", "研报", "业绩"]):
-            importance = 1
-
-        # 原文链接
-        url = item.get("target", "") or f"https://xueqiu.com/{item.get('user_id', '')}/{external_id}"
-
-        return NewsItem(
-            source=self.source,
-            external_id=external_id,
-            title=title,
-            content=content[:300],
-            publish_time=publish_time,
-            symbols=[symbol],
-            importance=importance,
-            url=url,
-        )
+        out: list[NewsItem] = []
+        for row in rows:
+            external_id = str(row.get("id") or "")
+            title = _clean_text(row.get("title") or row.get("description"))
+            if not external_id or not title:
+                continue
+            publish_time = _parse_time(row.get("created_at"))
+            if since and publish_time < since:
+                continue
+            content = _clean_text(row.get("description"))
+            out.append(
+                NewsItem(
+                    source=self.source,
+                    external_id=external_id,
+                    title=title,
+                    content=content,
+                    summary=content[:280],
+                    publish_time=publish_time,
+                    symbols=[symbol],
+                    importance=_importance_from_text(title, content),
+                    url=row.get("target") or f"https://xueqiu.com/{row.get('user_id', '')}/{external_id}",
+                    source_name="雪球资讯",
+                    language="zh",
+                    payload=row,
+                )
+            )
+        return out
 
 
 class EastMoneyStockNewsCollector(BaseNewsCollector):
-    """
-    东方财富个股新闻采集器
-
-    API: https://search-api-web.eastmoney.com/search/jsonp (搜索 API)
-    特点: 按股票名称搜索相关新闻（用名称搜索效果远好于代码）
-    """
-
     source = "eastmoney_news"
-    API_URL = "https://search-api-web.eastmoney.com/search/jsonp"
+    api_url = "https://search-api-web.eastmoney.com/search/jsonp"
 
     def __init__(self, symbol_names: dict[str, str] | None = None):
-        """
-        初始化采集器
-
-        Args:
-            symbol_names: 股票代码到名称的映射，如 {"601127": "赛力斯", "600519": "贵州茅台"}
-                          如果不提供，会自动从数据库获取
-        """
         self._symbol_names = symbol_names
 
     def _get_symbol_names(self, symbols: list[str]) -> dict[str, str]:
-        """获取股票代码到名称的映射（优先使用预设值，否则从数据库查询）"""
         if self._symbol_names:
-            # 过滤出请求的 symbols 对应的名称
-            return {sym: self._symbol_names[sym] for sym in symbols if sym in self._symbol_names}
+            return {sym: self._symbol_names.get(sym, sym) for sym in symbols}
 
-        # 从数据库获取
         try:
             from src.web.database import SessionLocal
             from src.web.models import Stock
@@ -238,88 +260,64 @@ class EastMoneyStockNewsCollector(BaseNewsCollector):
             db = SessionLocal()
             try:
                 stocks = db.query(Stock).filter(Stock.symbol.in_(symbols)).all()
-                return {s.symbol: s.name for s in stocks}
+                result = {row.symbol: row.name for row in stocks}
+                for symbol in symbols:
+                    result.setdefault(symbol, symbol)
+                return result
             finally:
                 db.close()
-        except Exception as e:
-            logger.warning(f"获取股票名称失败: {e}")
-            return {}
+        except Exception:
+            return {symbol: symbol for symbol in symbols}
 
     async def fetch_news(self, symbols: list[str] | None = None, since: datetime | None = None) -> list[NewsItem]:
-        """获取个股新闻（并发请求 + 缓存）- 支持 A股/港股/美股"""
         if not symbols:
             return []
 
-        # 获取股票名称映射（支持所有市场，因为我们用名称搜索）
         symbol_names = self._get_symbol_names(symbols)
-
-        # 对于没有名称的股票，使用代码作为 fallback
-        for sym in symbols:
-            if sym not in symbol_names:
-                symbol_names[sym] = sym
-                logger.debug(f"[EastMoneyStockNews] {sym} 无名称，使用代码搜索")
-
-        if not symbol_names:
-            return []
-
-        # 检查缓存
         cache_key = f"eastmoney_news:{','.join(sorted(symbols))}"
         cached = _get_cached(cache_key)
         if cached is not None:
-            logger.debug(f"东财资讯命中缓存")
-            if since:
-                return [n for n in cached if n.publish_time >= since]
-            return cached
+            return [item for item in cached if not since or item.publish_time >= since]
 
-        # 限制并发数
         semaphore = asyncio.Semaphore(5)
-
-        async def fetch_with_limit(client, symbol, stock_name):
-            async with semaphore:
-                # 缓存维度不包含 since，为避免“空结果污染缓存”，这里不做时间过滤
-                return await self._fetch_for_symbol(client, symbol, stock_name, None)
-
         headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0",
             "Referer": "https://so.eastmoney.com/",
             "Accept": "*/*",
         }
+
         async with httpx.AsyncClient(timeout=8, verify=False, headers=headers) as client:
-            tasks = [
-                fetch_with_limit(client, symbol, symbol_names.get(symbol, symbol))
-                for symbol in symbols
-                if symbol in symbol_names  # 只查询有名称的股票
-            ]
+            async def _wrapped(symbol: str, stock_name: str) -> list[NewsItem]:
+                async with semaphore:
+                    return await self._fetch_one(client, symbol, stock_name, since=None)
+
+            tasks = [_wrapped(symbol, symbol_names.get(symbol, symbol)) for symbol in symbols]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        all_news = []
+        all_items: list[NewsItem] = []
+        seen: set[str] = set()
         for result in results:
-            if isinstance(result, list):
-                all_news.extend(result)
+            if not isinstance(result, list):
+                continue
+            for item in result:
+                if item.external_id in seen:
+                    continue
+                seen.add(item.external_id)
+                all_items.append(item)
 
-        # 去重（相同新闻可能出现在多只股票搜索结果中）
-        seen = set()
-        unique_news = []
-        for news in all_news:
-            if news.external_id not in seen:
-                seen.add(news.external_id)
-                unique_news.append(news)
+        _set_cached(cache_key, all_items)
+        return [item for item in all_items if not since or item.publish_time >= since]
 
-        # 缓存结果
-        _set_cached(cache_key, unique_news)
-        logger.info(f"东方财富个股新闻采集到 {len(unique_news)} 条")
-        if since:
-            return [n for n in unique_news if n.publish_time >= since]
-        return unique_news
-
-    async def _fetch_for_symbol(self, client: httpx.AsyncClient, symbol: str, stock_name: str, since: datetime | None) -> list[NewsItem]:
-        """获取单只股票的新闻（使用搜索 API，用股票名称搜索）"""
-        import json as json_module
-
-        # 构建搜索参数 - 使用股票名称搜索
+    async def _fetch_one(
+        self,
+        client: httpx.AsyncClient,
+        symbol: str,
+        stock_name: str,
+        since: datetime | None,
+    ) -> list[NewsItem]:
         search_param = {
             "uid": "",
-            "keyword": stock_name,  # 用股票名称搜索，效果更好
+            "keyword": stock_name,
             "type": ["cmsArticleWebOld"],
             "client": "web",
             "clientType": "web",
@@ -331,132 +329,71 @@ class EastMoneyStockNewsCollector(BaseNewsCollector):
                     "pageIndex": 1,
                     "pageSize": 15,
                     "preTag": "",
-                    "postTag": ""
+                    "postTag": "",
                 }
-            }
+            },
         }
-
-        params = {
-            "cb": "jQuery",
-            "param": json_module.dumps(search_param, separators=(',', ':'))
-        }
-
         try:
-            resp = await client.get(self.API_URL, params=params)
+            resp = await client.get(
+                self.api_url,
+                params={"cb": "jQuery", "param": json.dumps(search_param, separators=(",", ":"))},
+            )
             resp.raise_for_status()
             text = resp.text
-
-            # 解析 JSONP: jQuery({...})
             if text.startswith("jQuery(") and text.endswith(")"):
-                json_str = text[7:-1]
-                data = json_module.loads(json_str)
+                payload = json.loads(text[7:-1])
             else:
                 return []
-
-            if data.get("code") != 0:
-                return []
-
-            items = data.get("result", {}).get("cmsArticleWebOld", [])
-            result = []
-
-            for item in items:
-                try:
-                    news = self._parse_item(item, symbol)
-                    if news:
-                        if since and news.publish_time < since:
-                            continue
-                        result.append(news)
-                except Exception as e:
-                    logger.debug(f"解析东方财富个股新闻失败: {e}")
-
-            return result
-
-        except Exception as e:
-            logger.debug(f"东方财富个股新闻采集失败 ({stock_name}): {e}")
+            rows = payload.get("result", {}).get("cmsArticleWebOld", [])
+        except Exception as exc:
+            logger.debug("eastmoney stock news failed for %s: %s", stock_name, exc)
             return []
 
-    def _parse_item(self, item: dict, symbol: str) -> NewsItem | None:
-        """解析单条新闻"""
-        external_id = str(item.get("code", ""))
-        if not external_id:
-            return None
-
-        title = item.get("title", "")
-        if not title:
-            return None
-
-        content = item.get("content", "") or ""
-        url = item.get("url", "")
-
-        # 清理 HTML（搜索结果可能包含 <em> 等高亮标签）
-        title = re.sub(r"<[^>]+>", "", title).strip()
-        content = re.sub(r"<[^>]+>", "", content).strip()
-
-        # 解析时间: "2026-01-20 17:19:17"
-        date_str = item.get("date", "")
-        try:
-            publish_time = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-        except (ValueError, TypeError):
-            try:
-                publish_time = datetime.strptime(date_str[:10], "%Y-%m-%d")
-            except (ValueError, TypeError):
-                publish_time = datetime.now()
-
-        # 重要性判断
-        importance = 0
-        if any(k in title for k in ["重磅", "突发", "紧急", "重大", "独家"]):
-            importance = 2
-        elif any(k in title for k in ["快讯", "消息", "公告", "研报"]):
-            importance = 1
-
-        # 原文链接 - 直接使用 API 返回的 URL
-        if not url:
-            url = f"https://finance.eastmoney.com/a/{external_id}.html"
-
-        return NewsItem(
-            source=self.source,
-            external_id=external_id,
-            title=title,
-            content=content,
-            publish_time=publish_time,
-            symbols=[symbol],
-            importance=importance,
-            url=url,
-        )
+        items: list[NewsItem] = []
+        for row in rows:
+            external_id = str(row.get("code") or "")
+            title = _clean_text(row.get("title"))
+            if not external_id or not title:
+                continue
+            content = _clean_text(row.get("content"))
+            publish_time = _parse_time(row.get("date"))
+            if since and publish_time < since:
+                continue
+            items.append(
+                NewsItem(
+                    source=self.source,
+                    external_id=external_id,
+                    title=title,
+                    content=content,
+                    summary=content[:280],
+                    publish_time=publish_time,
+                    symbols=[symbol],
+                    importance=_importance_from_text(title, content),
+                    url=row.get("url") or f"https://finance.eastmoney.com/a/{external_id}.html",
+                    source_name="东方财富资讯",
+                    language="zh",
+                    payload=row,
+                )
+            )
+        return items
 
 
 class EastMoneyNewsCollector(BaseNewsCollector):
-    """
-    东方财富公告采集器
-
-    API: https://np-anotice-stock.eastmoney.com/api/security/ann
-    特点: 支持批量查询多只股票公告
-    """
-
     source = "eastmoney"
-    API_URL = "https://np-anotice-stock.eastmoney.com/api/security/ann"
+    api_url = "https://np-anotice-stock.eastmoney.com/api/security/ann"
 
     async def fetch_news(self, symbols: list[str] | None = None, since: datetime | None = None) -> list[NewsItem]:
-        """获取东方财富公告（批量查询，单次请求）"""
         if not symbols:
-            logger.debug("东方财富公告需要指定股票代码")
             return []
-
-        # 只处理 A 股代码
         a_share_symbols = [s for s in symbols if len(s) == 6 and s.isdigit()]
         if not a_share_symbols:
             return []
 
-        # 检查缓存
         cache_key = f"eastmoney_ann:{','.join(sorted(a_share_symbols))}"
         cached = _get_cached(cache_key)
         if cached is not None:
-            logger.debug(f"东财公告命中缓存")
-            if since:
-                return [n for n in cached if n.publish_time >= since]
-            return cached
+            return [item for item in cached if not since or item.publish_time >= since]
 
-        # 批量查询（逗号分隔的股票代码）
         params = {
             "sr": -1,
             "page_size": 50,
@@ -466,197 +403,368 @@ class EastMoneyNewsCollector(BaseNewsCollector):
             "f_node": 0,
             "s_node": 0,
         }
-
         try:
-            async with httpx.AsyncClient(timeout=5, verify=False) as client:
-                resp = await client.get(self.API_URL, params=params)
+            async with httpx.AsyncClient(timeout=8, verify=False) as client:
+                resp = await client.get(self.api_url, params=params)
                 resp.raise_for_status()
-                data = resp.json()
-
-            if not data.get("success"):
-                return []
-
-            items = data.get("data", {}).get("list", [])
-            result = []
-
-            for item in items:
-                try:
-                    # 从公告中提取关联的股票代码
-                    codes = item.get("codes", []) or []
-                    stock_codes = [c.get("stock_code", "") for c in codes if c.get("stock_code")]
-                    if not stock_codes:
-                        stock_codes = a_share_symbols[:1]
-
-                    news = self._parse_item(item, stock_codes[0])
-                    if news:
-                        # 设置所有关联的股票代码
-                        news.symbols = stock_codes
-                        result.append(news)
-                except Exception as e:
-                    logger.debug(f"解析东方财富公告失败: {e}")
-
-            # 缓存结果（缓存维度不包含 since，避免“空结果污染缓存”）
-            _set_cached(cache_key, result)
-            logger.info(f"东方财富公告采集到 {len(result)} 条")
-            if since:
-                return [n for n in result if n.publish_time >= since]
-            return result
-
-        except Exception as e:
-            logger.warning(f"东方财富公告采集失败: {e}")
+                rows = resp.json().get("data", {}).get("list", [])
+        except Exception as exc:
+            logger.debug("eastmoney announcements failed: %s", exc)
             return []
 
-    def _parse_item(self, item: dict, symbol: str) -> NewsItem | None:
-        """解析单条公告"""
-        external_id = str(item.get("art_code", ""))
-        if not external_id:
-            return None
+        items: list[NewsItem] = []
+        for row in rows:
+            external_id = str(row.get("art_code") or "")
+            title = _clean_text(row.get("title"))
+            if not external_id or not title:
+                continue
+            publish_time = _parse_time(row.get("notice_date"))
+            related_symbols = [c.get("stock_code", "") for c in row.get("codes", []) if c.get("stock_code")]
+            related_symbols = [s for s in related_symbols if s]
+            if since and publish_time < since:
+                continue
+            items.append(
+                NewsItem(
+                    source=self.source,
+                    external_id=external_id,
+                    title=title,
+                    content="",
+                    summary="",
+                    publish_time=publish_time,
+                    symbols=related_symbols or a_share_symbols[:1],
+                    importance=_importance_from_text(title),
+                    url=f"https://data.eastmoney.com/notices/detail/{(related_symbols or a_share_symbols[:1])[0]}/{external_id}.html",
+                    source_name="东方财富公告",
+                    language="zh",
+                    payload=row,
+                )
+            )
 
-        title = item.get("title", "")
+        _set_cached(cache_key, items)
+        return [item for item in items if not since or item.publish_time >= since]
+
+
+class RssFeedNewsCollector(BaseNewsCollector):
+    source = "rss_feed"
+
+    def __init__(
+        self,
+        feed_url: str,
+        language: str = "zh",
+        source_name: str = "",
+        timeout_s: float = 12.0,
+        fetch_limit: int = 40,
+    ):
+        self.feed_url = feed_url
+        self.language = language or "zh"
+        self.source_name = source_name or feed_url
+        self.timeout_s = timeout_s
+        self.fetch_limit = fetch_limit
+        self.source = f"rss_feed::{self.source_name}"
+
+    async def fetch_news(self, symbols: list[str] | None = None, since: datetime | None = None) -> list[NewsItem]:
+        cache_key = f"rss:{self.feed_url}"
+        cached = _get_cached(cache_key)
+        if cached is not None:
+            return [item for item in cached if not since or item.publish_time >= since]
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_s, follow_redirects=True, headers=headers) as client:
+                resp = await client.get(self.feed_url)
+                resp.raise_for_status()
+                xml_text = resp.text.lstrip("\ufeff").strip()
+        except Exception as exc:
+            logger.warning("rss feed fetch failed %s: %s", self.feed_url, exc)
+            return []
+
+        try:
+            root = ET.fromstring(xml_text)
+        except Exception as exc:
+            logger.warning("rss xml parse failed %s: %s", self.feed_url, exc)
+            return []
+
+        rows = root.findall(".//item")
+        if not rows:
+            rows = root.findall(".//{*}entry")
+
+        items: list[NewsItem] = []
+        for row in rows[: self.fetch_limit]:
+            item = self._parse_row(row)
+            if not item:
+                continue
+            if since and item.publish_time < since:
+                continue
+            items.append(item)
+
+        _set_cached(cache_key, items)
+        return items
+
+    def _child_text(self, node: ET.Element, *names: str) -> str:
+        for name in names:
+            for child in node.iter():
+                tag = child.tag.split("}", 1)[-1]
+                if tag == name and (child.text or "").strip():
+                    return child.text or ""
+        return ""
+
+    def _link(self, node: ET.Element) -> str:
+        for child in node.iter():
+            tag = child.tag.split("}", 1)[-1]
+            if tag != "link":
+                continue
+            href = child.attrib.get("href")
+            if href:
+                return href
+            if (child.text or "").strip():
+                return child.text or ""
+        return ""
+
+    def _parse_row(self, row: ET.Element) -> NewsItem | None:
+        title = _clean_text(self._child_text(row, "title"))
+        link = self._link(row)
+        summary = _clean_text(self._child_text(row, "description", "summary", "encoded", "content"))
+        content = _clean_text(self._child_text(row, "encoded", "content", "description", "summary"))
+        external_id = _clean_text(self._child_text(row, "guid", "id")) or _hash_text(link, title)
+        published = _parse_time(
+            self._child_text(row, "pubDate", "published", "updated", "dc:date", "date")
+        )
         if not title:
             return None
-
-        # 解析时间
-        notice_date = item.get("notice_date", "")
-        try:
-            publish_time = datetime.strptime(notice_date, "%Y-%m-%d %H:%M:%S")
-        except (ValueError, TypeError):
-            try:
-                publish_time = datetime.strptime(notice_date[:10], "%Y-%m-%d")
-            except (ValueError, TypeError):
-                publish_time = datetime.now()
-
-        # 重要性判断
-        importance = 0
-        columns = item.get("columns", []) or []
-        column_names = [c.get("column_name", "") for c in columns]
-        if any(k in title for k in ["重大", "业绩预告", "业绩快报", "年报", "半年报"]):
-            importance = 3
-        elif any(k in title for k in ["季报", "分红", "增持", "减持"]):
-            importance = 2
-        elif "临时" in str(column_names):
-            importance = 1
-
-        # 原文链接
-        url = f"https://data.eastmoney.com/notices/detail/{symbol}/{external_id}.html"
 
         return NewsItem(
             source=self.source,
             external_id=external_id,
             title=title,
-            content="",  # 公告通常只有标题，内容需另外获取
-            publish_time=publish_time,
-            symbols=[symbol],
-            importance=importance,
-            url=url,
+            content=content or summary,
+            summary=summary or content[:320],
+            publish_time=published,
+            importance=_importance_from_text(title, summary or content),
+            url=link,
+            source_name=self.source_name,
+            language=self.language,
+            payload={"feed_url": self.feed_url},
         )
 
 
-class NewsCollector:
-    """聚合新闻采集器"""
+class TushareNewsCollector(BaseNewsCollector):
+    source = "tushare"
 
-    # 数据源 provider 到采集器的映射
+    def __init__(
+        self,
+        token: str = "",
+        endpoint: str = "news",
+        src: str = "",
+        source_name: str = "Tushare",
+        timeout_s: float = 15.0,
+        fetch_limit: int = 40,
+    ):
+        settings = Settings()
+        self.token = token or settings.tushare_token
+        self.base_url = settings.tushare_base_url
+        self.endpoint = endpoint or "news"
+        self.src = src
+        self.source_name = source_name
+        self.timeout_s = timeout_s
+        self.fetch_limit = fetch_limit
+        self.source = f"tushare::{self.endpoint}:{self.src or 'all'}"
+
+    async def fetch_news(self, symbols: list[str] | None = None, since: datetime | None = None) -> list[NewsItem]:
+        if not self.token:
+            logger.info("skip tushare news fetch because token is empty")
+            return []
+
+        cache_key = f"tushare:{self.endpoint}:{self.src}:{since.strftime('%Y%m%d%H') if since else ''}"
+        cached = _get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        rows = await asyncio.to_thread(self._fetch_rows, since)
+        items: list[NewsItem] = []
+        for row in rows:
+            title = _clean_text(row.get("title") or row.get("headline"))
+            if not title:
+                continue
+            summary = _clean_text(row.get("summary") or row.get("content") or row.get("brief"))
+            content = _clean_text(row.get("content") or row.get("summary") or row.get("brief"))
+            url = row.get("url") or row.get("website") or ""
+            external_id = str(
+                row.get("id")
+                or row.get("news_id")
+                or row.get("uuid")
+                or row.get("title_id")
+                or _hash_text(url, title)
+            )
+            publish_time = _parse_time(
+                row.get("datetime")
+                or row.get("pub_time")
+                or row.get("pubdate")
+                or row.get("pub_date")
+                or row.get("date")
+            )
+            item = NewsItem(
+                source=self.source,
+                external_id=external_id,
+                title=title,
+                content=content,
+                summary=summary or content[:320],
+                publish_time=publish_time,
+                importance=_importance_from_text(title, content),
+                url=url,
+                source_name=self.source_name,
+                language="zh",
+                payload=row,
+            )
+            if since and item.publish_time < since:
+                continue
+            items.append(item)
+
+        items.sort(key=lambda item: item.publish_time, reverse=True)
+        items = items[: self.fetch_limit]
+        _set_cached(cache_key, items)
+        return items
+
+    def _fetch_rows(self, since: datetime | None) -> list[dict]:
+        if ts is None:
+            logger.warning("tushare sdk is not installed")
+            return []
+        try:
+            if self.base_url and hasattr(ts, "set_token"):
+                try:
+                    ts.set_token(self.token)
+                except Exception:
+                    pass
+            pro = ts.pro_api(self.token)
+            start = (since or (datetime.now() - timedelta(days=2))).strftime("%Y-%m-%d %H:%M:%S")
+            end = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            method = getattr(pro, self.endpoint)
+            kwargs: dict = {"start_date": start, "end_date": end}
+            if self.src:
+                kwargs["src"] = self.src
+            frame = method(**kwargs)
+        except TypeError:
+            try:
+                pro = ts.pro_api(self.token)
+                frame = getattr(pro, self.endpoint)(src=self.src or None)
+            except Exception as exc:
+                logger.warning("tushare %s fetch failed: %s", self.endpoint, exc)
+                return []
+        except Exception as exc:
+            logger.warning("tushare %s fetch failed: %s", self.endpoint, exc)
+            return []
+
+        if frame is None or getattr(frame, "empty", True):
+            return []
+
+        try:
+            rows = frame.to_dict("records")
+        except Exception:
+            return []
+        return rows[: self.fetch_limit]
+
+
+class NewsCollector:
+    """Aggregate multiple news sources."""
+
     COLLECTOR_MAP = {
-        "xueqiu": lambda config: XueqiuNewsCollector(cookies=config.get("cookies", "")),
-        "eastmoney_news": lambda config: EastMoneyStockNewsCollector(
-            symbol_names=config.get("symbol_names")  # 可选，不传则自动从数据库获取
+        "xueqiu": lambda config, name: XueqiuNewsCollector(cookies=config.get("cookies", "")),
+        "eastmoney_news": lambda config, name: EastMoneyStockNewsCollector(
+            symbol_names=config.get("symbol_names")
         ),
-        "eastmoney": lambda config: EastMoneyNewsCollector(),
+        "eastmoney": lambda config, name: EastMoneyNewsCollector(),
+        "rss_feed": lambda config, name: RssFeedNewsCollector(
+            feed_url=config.get("feed_url", ""),
+            language=config.get("language", "zh"),
+            source_name=name or config.get("source_name") or config.get("feed_url", ""),
+            timeout_s=float(config.get("timeout_s", 12.0) or 12.0),
+            fetch_limit=int(config.get("fetch_limit", 40) or 40),
+        ),
+        "tushare": lambda config, name: TushareNewsCollector(
+            token=config.get("token", ""),
+            endpoint=config.get("endpoint", "news"),
+            src=config.get("src", ""),
+            source_name=name or "Tushare",
+            timeout_s=float(config.get("timeout_s", 15.0) or 15.0),
+            fetch_limit=int(config.get("fetch_limit", 40) or 40),
+        ),
     }
 
     def __init__(self, collectors: list[BaseNewsCollector] | None = None):
-        self.collectors = collectors or [
-            EastMoneyStockNewsCollector(),  # 个股新闻
-            EastMoneyNewsCollector(),        # 个股公告
-        ]
+        self.collectors = collectors or []
 
     @classmethod
-    def from_database(cls) -> "NewsCollector":
-        """从数据库配置构建新闻采集器"""
+    def from_database(cls, provider_allowlist: set[str] | None = None) -> "NewsCollector":
         from src.web.database import SessionLocal
         from src.web.models import DataSource
 
-        collectors = []
         db = SessionLocal()
+        collectors: list[BaseNewsCollector] = []
         try:
-            data_sources = (
+            query = (
                 db.query(DataSource)
                 .filter(DataSource.type == "news", DataSource.enabled == True)
-                .order_by(DataSource.priority)
-                .all()
+                .order_by(DataSource.priority.asc(), DataSource.id.asc())
             )
-
-            for ds in data_sources:
+            for ds in query.all():
+                if provider_allowlist and ds.provider not in provider_allowlist:
+                    continue
                 factory = cls.COLLECTOR_MAP.get(ds.provider)
-                if factory:
-                    try:
-                        collector = factory(ds.config or {})
-                        collectors.append(collector)
-                    except Exception:
-                        pass
+                if not factory:
+                    continue
+                try:
+                    collector = factory(ds.config or {}, ds.name)
+                    if ds.provider == "rss_feed" and not getattr(collector, "feed_url", ""):
+                        continue
+                    collectors.append(collector)
+                except Exception as exc:
+                    logger.warning("failed to build news collector %s: %s", ds.provider, exc)
         finally:
             db.close()
-
-        # 如果没有配置数据源，使用默认
-        if not collectors:
-            collectors = [EastMoneyStockNewsCollector(), EastMoneyNewsCollector()]
-
         return cls(collectors=collectors)
 
     async def fetch_all(
         self,
         symbols: list[str] | None = None,
-        since_hours: int = 2,
+        since_hours: int = 24,
         symbol_names: dict[str, str] | None = None,
     ) -> list[NewsItem]:
-        """
-        聚合所有数据源的新闻（并发采集）
+        if not self.collectors:
+            return []
 
-        Args:
-            symbols: 股票代码列表
-            since_hours: 获取最近 N 小时的新闻（快讯类）
-            symbol_names: 股票代码到名称的映射（可选，如果不传则由采集器自行获取）
+        since = datetime.now() - timedelta(hours=since_hours)
 
-        Returns:
-            按时间倒序排列的新闻列表
-        """
-        import asyncio
-
-        # 如果传入了 symbol_names，更新各采集器的配置
-        if symbol_names:
-            for collector in self.collectors:
-                if isinstance(collector, EastMoneyStockNewsCollector):
-                    collector._symbol_names = symbol_names
-
-        # 公告使用更长的时间窗口（因为公告发布较少）
-        news_since = datetime.now() - timedelta(hours=since_hours)
-        announcement_since = datetime.now() - timedelta(hours=max(since_hours, 72))
-
-        async def fetch_from_collector(collector: BaseNewsCollector) -> list[NewsItem]:
+        async def _fetch_one(collector: BaseNewsCollector) -> list[NewsItem]:
             try:
-                since = announcement_since if collector.source == "eastmoney" else news_since
-                return await collector.fetch_news(symbols, since)
-            except Exception as e:
-                logger.error(f"采集器 {collector.source} 失败: {e}")
+                return await collector.fetch_news(symbols=symbols, since=since)
+            except Exception as exc:
+                logger.error("news collector failed %s: %s", getattr(collector, "source", "?"), exc)
                 return []
 
-        # 并发采集所有数据源
-        results = await asyncio.gather(*[fetch_from_collector(c) for c in self.collectors])
-
-        all_news: list[NewsItem] = []
-        for news_list in results:
-            all_news.extend(news_list)
-
-        # 按时间倒序 + 重要性倒序排列
-        all_news.sort(key=lambda x: (x.publish_time, x.importance), reverse=True)
-
-        # 去重（按 source + external_id）
-        seen = set()
-        unique_news = []
-        for news in all_news:
-            key = (news.source, news.external_id)
-            if key not in seen:
+        results = await asyncio.gather(*[_fetch_one(collector) for collector in self.collectors])
+        items: list[NewsItem] = []
+        seen: set[tuple[str, str]] = set()
+        for group in results:
+            for item in group:
+                self._annotate_item(item, symbol_names)
+                key = (item.source, item.external_id or _hash_text(item.url, item.title))
+                if key in seen:
+                    continue
                 seen.add(key)
-                unique_news.append(news)
+                items.append(item)
 
-        return unique_news
+        items.sort(key=lambda item: (item.relevance_score, item.importance, item.publish_time), reverse=True)
+        return items
+
+    def _annotate_item(self, item: NewsItem, symbol_names: dict[str, str] | None) -> None:
+        text = " ".join([item.title or "", item.summary or "", item.content or ""])
+        matched = _match_symbols(text, symbol_names)
+        if matched:
+            merged = list(dict.fromkeys([*item.symbols, *matched]))
+            item.symbols = merged
+            item.relevance_score = max(item.relevance_score, 2.0 + len(merged))
+        else:
+            item.relevance_score = max(item.relevance_score, float(item.importance))

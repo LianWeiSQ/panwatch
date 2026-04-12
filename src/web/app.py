@@ -28,6 +28,7 @@ from src.web.api import (
     chat,
     runtime,
     instruments,
+    news_analysis,
 )
 from src.web.api import insights
 from src.web.api.auth import get_current_user
@@ -169,6 +170,12 @@ app.include_router(
     instruments.router,
     prefix="/api/instruments",
     tags=["instruments"],
+    dependencies=protected,
+)
+app.include_router(
+    news_analysis.router,
+    prefix="/api/news-analysis",
+    tags=["news-analysis"],
     dependencies=protected,
 )
 

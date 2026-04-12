@@ -399,6 +399,61 @@ class NewsTopicSnapshot(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class NewsArticle(Base):
+    """标准化新闻文章缓存"""
+
+    __tablename__ = "news_articles"
+    __table_args__ = (
+        UniqueConstraint("provider", "external_id", name="uq_news_articles_provider_external"),
+        UniqueConstraint("provider", "url_hash", "title_hash", name="uq_news_articles_provider_url_title"),
+        Index("ix_news_articles_published", "published_at"),
+        Index("ix_news_articles_language", "language", "published_at"),
+        Index("ix_news_articles_relevance", "relevance_score", "published_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String, nullable=False)
+    source_name = Column(String, nullable=False, default="")
+    external_id = Column(String, nullable=False, default="")
+    language = Column(String, nullable=False, default="zh")
+    title = Column(String, nullable=False)
+    summary = Column(String, default="")
+    content = Column(Text, default="")
+    cn_summary = Column(Text, default="")
+    url = Column(String, default="")
+    url_hash = Column(String, nullable=False, default="")
+    title_hash = Column(String, nullable=False, default="")
+    published_at = Column(DateTime, nullable=False)
+    fetched_at = Column(DateTime, server_default=func.now(), nullable=False)
+    symbols = Column(JSON, default=[])
+    relevance_score = Column(Float, default=0.0)
+    payload = Column(JSON, default={})
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class NewsSourceStatus(Base):
+    """新闻源最近抓取状态"""
+
+    __tablename__ = "news_source_status"
+    __table_args__ = (
+        UniqueConstraint("provider", name="uq_news_source_status_provider"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String, nullable=False)
+    source_name = Column(String, nullable=False, default="")
+    enabled = Column(Boolean, default=True)
+    status = Column(String, nullable=False, default="idle")  # idle/success/error
+    last_success_at = Column(DateTime, nullable=True)
+    last_attempt_at = Column(DateTime, nullable=True)
+    last_error = Column(String, default="")
+    article_count = Column(Integer, default=0)
+    meta = Column(JSON, default={})
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class AgentContextRun(Base):
     """每次 Agent 执行时使用的上下文摘要"""
 

@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Label } from '@panwatch/base-ui/components/ui/label'
 import { Input } from '@panwatch/base-ui/components/ui/input'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
+import ScheduleEditorDialog, { formatSchedule, type SchedulePreview } from '@/components/ScheduleEditorDialog'
 
 interface AgentConfig {
   id: number
@@ -35,12 +36,6 @@ interface StockConfig {
   name: string
   market: string
   agents: StockAgentInfo[]
-}
-
-interface SchedulePreview {
-  schedule: string
-  timezone: string
-  next_runs: string[]
 }
 
 interface AgentRun {
@@ -75,80 +70,6 @@ interface AgentsHealth {
   }>
 }
 
-// 调度类型
-type ScheduleType = 'daily' | 'weekdays' | 'interval' | 'cron'
-
-interface ScheduleConfig {
-  type: ScheduleType
-  time?: string      // HH:MM 格式
-  interval?: number  // 分钟数
-  cron?: string      // 自定义 cron
-}
-
-// cron 转友好配置
-function parseCronToConfig(cron: string): ScheduleConfig {
-  if (!cron) return { type: 'daily', time: '15:30' }
-
-  const parts = cron.trim().split(/\s+/)
-  if (parts.length !== 5) return { type: 'cron', cron }
-
-  const [minute, hour, , , dayOfWeek] = parts
-
-  // 检测间隔模式 */N
-  if (minute.startsWith('*/')) {
-    const interval = parseInt(minute.slice(2))
-    if (!isNaN(interval)) return { type: 'interval', interval }
-  }
-
-  // 检测每天或工作日
-  const m = parseInt(minute)
-  const h = parseInt(hour)
-  if (!isNaN(m) && !isNaN(h)) {
-    const time = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
-    if (dayOfWeek === '1-5') return { type: 'weekdays', time }
-    if (dayOfWeek === '*') return { type: 'daily', time }
-  }
-
-  return { type: 'cron', cron }
-}
-
-// 友好配置转 cron
-function configToCron(config: ScheduleConfig): string {
-  switch (config.type) {
-    case 'daily': {
-      const [h, m] = (config.time || '15:30').split(':')
-      return `${parseInt(m)} ${parseInt(h)} * * *`
-    }
-    case 'weekdays': {
-      const [h, m] = (config.time || '15:30').split(':')
-      return `${parseInt(m)} ${parseInt(h)} * * 1-5`
-    }
-    case 'interval':
-      return `*/${config.interval || 30} * * * *`
-    case 'cron':
-      return config.cron || '0 15 * * *'
-    default:
-      return '0 15 * * *'
-  }
-}
-
-// 友好显示调度
-function formatSchedule(cron: string): string {
-  const config = parseCronToConfig(cron)
-  switch (config.type) {
-    case 'daily':
-      return `每天 ${config.time}`
-    case 'weekdays':
-      return `工作日 ${config.time}`
-    case 'interval':
-      return `每 ${config.interval} 分钟`
-    case 'cron':
-      return cron
-    default:
-      return cron
-  }
-}
-
 export default function AgentsPage() {
   const [agents, setAgents] = useState<AgentConfig[]>([])
   const [stocks, setStocks] = useState<StockConfig[]>([])
@@ -169,9 +90,6 @@ export default function AgentsPage() {
 
   // 调度编辑弹窗
   const [scheduleDialogAgent, setScheduleDialogAgent] = useState<AgentConfig | null>(null)
-  const [scheduleConfig, setScheduleConfig] = useState<ScheduleConfig>({ type: 'daily', time: '15:30' })
-  const [schedulePreview, setSchedulePreview] = useState<SchedulePreview | { error: string } | null>(null)
-  const [schedulePreviewLoading, setSchedulePreviewLoading] = useState(false)
 
   const [runsOpen, setRunsOpen] = useState<Record<string, boolean>>({})
   const [runsLoading, setRunsLoading] = useState<Record<string, boolean>>({})
@@ -242,30 +160,6 @@ export default function AgentsPage() {
   }
 
   useEffect(() => { load(); loadHealth() }, [])
-
-  // 调度编辑弹窗：实时预览未来触发时间（防止工作日/周末语义误解）
-  useEffect(() => {
-    if (!scheduleDialogAgent) {
-      setSchedulePreview(null)
-      return
-    }
-
-    const cron = configToCron(scheduleConfig)
-    const timer = setTimeout(async () => {
-      setSchedulePreviewLoading(true)
-      try {
-        const p = await fetchAPI<SchedulePreview>(`/agents/schedule/preview?schedule=${encodeURIComponent(cron)}&count=5`)
-        setSchedulePreview(p)
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : '预览失败'
-        setSchedulePreview({ error: msg })
-      } finally {
-        setSchedulePreviewLoading(false)
-      }
-    }, 350)
-
-    return () => clearTimeout(timer)
-  }, [scheduleDialogAgent, scheduleConfig])
 
   const toggleAgent = async (agent: AgentConfig) => {
     await fetchAPI(`/agents/${agent.name}`, {
@@ -441,17 +335,14 @@ export default function AgentsPage() {
 
   const openScheduleDialog = (agent: AgentConfig) => {
     setScheduleDialogAgent(agent)
-    setScheduleConfig(parseCronToConfig(agent.schedule))
   }
 
-  const saveSchedule = async () => {
+  const saveSchedule = async (cron: string) => {
     if (!scheduleDialogAgent) return
-    const cron = configToCron(scheduleConfig)
     await fetchAPI(`/agents/${scheduleDialogAgent.name}`, {
       method: 'PUT',
       body: JSON.stringify({ schedule: cron }),
     })
-    setScheduleDialogAgent(null)
     load()
     toast('调度已更新', 'success')
   }
@@ -708,123 +599,14 @@ export default function AgentsPage() {
       )}
 
       {/* 调度设置弹窗 */}
-      <Dialog open={!!scheduleDialogAgent} onOpenChange={open => !open && setScheduleDialogAgent(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>设置执行周期</DialogTitle>
-            <DialogDescription>{scheduleDialogAgent?.display_name}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 mt-2">
-            <div>
-              <Label>调度类型</Label>
-              <Select
-                value={scheduleConfig.type}
-                onValueChange={val => setScheduleConfig({ ...scheduleConfig, type: val as ScheduleType })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="daily">每天定时</SelectItem>
-                  <SelectItem value="weekdays">工作日定时</SelectItem>
-                  <SelectItem value="interval">固定间隔</SelectItem>
-                  <SelectItem value="cron">自定义 Cron</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {(scheduleConfig.type === 'daily' || scheduleConfig.type === 'weekdays') && (
-              <div>
-                <Label>执行时间</Label>
-                <Input
-                  type="time"
-                  value={scheduleConfig.time || '15:30'}
-                  onChange={e => setScheduleConfig({ ...scheduleConfig, time: e.target.value })}
-                />
-                <p className="text-[11px] text-muted-foreground mt-1">
-                  {scheduleConfig.type === 'weekdays' ? '周一至周五' : '每天'}在此时间执行
-                </p>
-              </div>
-            )}
-
-            {scheduleConfig.type === 'interval' && (
-              <div>
-                <Label>执行间隔（分钟）</Label>
-                <Select
-                  value={(scheduleConfig.interval || 30).toString()}
-                  onValueChange={val => setScheduleConfig({ ...scheduleConfig, interval: parseInt(val) })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="5">每 5 分钟</SelectItem>
-                    <SelectItem value="10">每 10 分钟</SelectItem>
-                    <SelectItem value="15">每 15 分钟</SelectItem>
-                    <SelectItem value="30">每 30 分钟</SelectItem>
-                    <SelectItem value="60">每小时</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-
-            {scheduleConfig.type === 'cron' && (
-              <div>
-                <Label>Cron 表达式</Label>
-                <Input
-                  value={scheduleConfig.cron || ''}
-                  onChange={e => setScheduleConfig({ ...scheduleConfig, cron: e.target.value })}
-                  placeholder="0 15 * * 1-5"
-                  className="font-mono"
-                />
-                <p className="text-[11px] text-muted-foreground mt-1">
-                  格式：分 时 日 月 周（如 0 15 * * 1-5 表示工作日 15:00）
-                </p>
-              </div>
-            )}
-
-            {/* Preview */}
-            <div className="rounded-lg border border-border/50 bg-accent/20 p-3">
-              <div className="flex items-center justify-between">
-                <div className="text-[12px] font-medium text-foreground">未来触发时间预览</div>
-                {schedulePreviewLoading && (
-                  <span className="w-3.5 h-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-                )}
-              </div>
-              {'error' in (schedulePreview || {}) ? (
-                <div className="mt-2 text-[11px] text-muted-foreground">
-                  {(schedulePreview as { error: string }).error}
-                </div>
-              ) : (schedulePreview as SchedulePreview | null)?.next_runs?.length ? (
-                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-                  {(schedulePreview as SchedulePreview).next_runs.map((t, i) => (
-                    <span
-                      key={i}
-                      className="px-1.5 py-0.5 rounded border border-border/60 bg-background/40 font-mono"
-                      title={t}
-                    >
-                      {formatPreviewTime(t, (schedulePreview as SchedulePreview).timezone)}
-                    </span>
-                  ))}
-                  {(schedulePreview as SchedulePreview | null)?.timezone ? (
-                    <span className="opacity-60">({(schedulePreview as SchedulePreview).timezone})</span>
-                  ) : null}
-                </div>
-              ) : (
-                <div className="mt-2 text-[11px] text-muted-foreground">—</div>
-              )}
-              <div className="mt-2 text-[11px] text-muted-foreground/70 font-mono">
-                schedule: {configToCron(scheduleConfig)}
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <Button variant="ghost" onClick={() => setScheduleDialogAgent(null)}>取消</Button>
-              <Button onClick={saveSchedule}>保存</Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ScheduleEditorDialog
+        open={!!scheduleDialogAgent}
+        onOpenChange={open => !open && setScheduleDialogAgent(null)}
+        title="设置执行周期"
+        description={scheduleDialogAgent?.display_name || ''}
+        schedule={scheduleDialogAgent?.schedule || ''}
+        onSave={saveSchedule}
+      />
 
       <Dialog open={!!bindDialogAgent} onOpenChange={(open) => !open && setBindDialogAgent(null)}>
         <DialogContent>

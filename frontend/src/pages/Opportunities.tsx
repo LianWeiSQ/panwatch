@@ -35,7 +35,7 @@ const sourceAgentLabelMap: Record<string, string> = {
   premarket_outlook: '盘前分析',
   intraday_monitor: '盘中监测',
   daily_report: '收盘复盘',
-  news_digest: '新闻速递',
+  news_digest: '新闻分析',
   market_scan: '市场扫描',
 }
 

@@ -549,7 +549,7 @@ export default function DashboardPage() {
     const cards = [
       { key: 'daily', title: '收盘复盘', icon: Moon, style: 'bg-orange-500/10 text-orange-500', record: dailyReport },
       { key: 'premarket', title: '盘前分析', icon: Sun, style: 'bg-amber-500/10 text-amber-500', record: premarketOutlook },
-      { key: 'news', title: '新闻速递', icon: Newspaper, style: 'bg-blue-500/10 text-blue-500', record: newsDigest },
+      { key: 'news', title: '新闻分析', icon: Newspaper, style: 'bg-blue-500/10 text-blue-500', record: newsDigest },
     ]
     return cards.filter(c => !!c.record).map(c => ({
       ...c,

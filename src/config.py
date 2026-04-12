@@ -12,16 +12,44 @@ class Settings(BaseSettings):
     """环境变量配置"""
 
     # AI
-    ai_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
-    ai_api_key: str = ""
-    ai_model: str = "glm-4"
+    ai_base_url: str = Field(
+        default="https://open.bigmodel.cn/api/paas/v4",
+        validation_alias=AliasChoices(
+            "AI_BASE_URL",
+            "PANWATCH_AI_BASE_URL",
+            "OPENAI_BASE_URL",
+        ),
+    )
+    ai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AI_API_KEY",
+            "PANWATCH_AI_API_KEY",
+            "OPENAI_API_KEY",
+        ),
+    )
+    ai_model: str = Field(
+        default="glm-4",
+        validation_alias=AliasChoices(
+            "AI_MODEL",
+            "PANWATCH_AI_MODEL",
+            "OPENAI_MODEL",
+        ),
+    )
 
     # Telegram
     notify_telegram_bot_token: str = ""
     notify_telegram_chat_id: str = ""
 
     # 代理
-    http_proxy: str = ""
+    http_proxy: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "PANWATCH_HTTP_PROXY",
+        ),
+    )
     tushare_token: str = Field(
         default="",
         validation_alias=AliasChoices("TUSHARE_TOKEN", "PANWATCH_TUSHARE_TOKEN"),

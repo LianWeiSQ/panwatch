@@ -62,6 +62,8 @@ class DataCollectorManager:
             XueqiuNewsCollector,
             EastMoneyStockNewsCollector,
             EastMoneyNewsCollector,
+            RssFeedNewsCollector,
+            TushareNewsCollector,
         )
         from src.collectors.kline_collector import KlineCollector
         from src.collectors.capital_flow_collector import CapitalFlowCollector
@@ -75,6 +77,21 @@ class DataCollectorManager:
                 ),
                 "eastmoney_news": lambda cfg: EastMoneyStockNewsCollector(),
                 "eastmoney": lambda cfg: EastMoneyNewsCollector(),
+                "rss_feed": lambda cfg: RssFeedNewsCollector(
+                    feed_url=cfg.get("feed_url", ""),
+                    language=cfg.get("language", "zh"),
+                    source_name=cfg.get("source_name", "") or cfg.get("feed_url", ""),
+                    timeout_s=float(cfg.get("timeout_s", 12) or 12),
+                    fetch_limit=int(cfg.get("fetch_limit", 20) or 20),
+                ),
+                "tushare": lambda cfg: TushareNewsCollector(
+                    token=cfg.get("token", ""),
+                    endpoint=cfg.get("endpoint", "news"),
+                    src=cfg.get("src", ""),
+                    source_name=cfg.get("source_name", "") or "Tushare",
+                    timeout_s=float(cfg.get("timeout_s", 15) or 15),
+                    fetch_limit=int(cfg.get("fetch_limit", 20) or 20),
+                ),
             },
             "kline": {
                 "tencent": lambda cfg: ("tencent", KlineCollector),
@@ -418,6 +435,8 @@ class DataCollectorManager:
                 XueqiuNewsCollector,
                 EastMoneyStockNewsCollector,
                 EastMoneyNewsCollector,
+                RssFeedNewsCollector,
+                TushareNewsCollector,
             )
 
             since = datetime.now() - timedelta(hours=24)
@@ -433,15 +452,43 @@ class DataCollectorManager:
                 collector = EastMoneyStockNewsCollector(symbol_names=symbol_names)
             elif source.provider == "eastmoney":
                 collector = EastMoneyNewsCollector()
+            elif source.provider == "rss_feed":
+                cfg = source.config or {}
+                feed_url = str(cfg.get("feed_url") or "").strip()
+                if not feed_url:
+                    return CollectorResult(success=False, error="请先配置 RSS URL")
+                collector = RssFeedNewsCollector(
+                    feed_url=feed_url,
+                    language=cfg.get("language", "zh"),
+                    source_name=source.name,
+                    timeout_s=float(cfg.get("timeout_s", 12) or 12),
+                    fetch_limit=int(cfg.get("fetch_limit", 20) or 20),
+                )
+            elif source.provider == "tushare":
+                cfg = source.config or {}
+                token = str(cfg.get("token") or "").strip()
+                if not token:
+                    return CollectorResult(success=False, error="请先配置 Tushare token")
+                collector = TushareNewsCollector(
+                    token=token,
+                    endpoint=str(cfg.get("endpoint") or "news"),
+                    src=str(cfg.get("src") or ""),
+                    source_name=source.name,
+                    timeout_s=float(cfg.get("timeout_s", 15) or 15),
+                    fetch_limit=int(cfg.get("fetch_limit", 20) or 20),
+                )
 
             if collector:
-                news = await collector.fetch_news(symbols=test_symbols, since=since)
+                fetch_symbols = test_symbols if source.provider in {"xueqiu", "eastmoney_news", "eastmoney"} else None
+                news = await collector.fetch_news(symbols=fetch_symbols, since=since)
                 error_msg = ""
                 if len(news) == 0:
                     if source.provider == "xueqiu":
                         error_msg = "无数据，请检查 cookie 是否有效"
                     elif source.provider == "eastmoney_news" and not symbol_names:
                         error_msg = "未找到测试股票的名称，请先添加自选股"
+                    elif source.provider == "tushare":
+                        error_msg = "未获取到 Tushare 新闻数据，可能是 token 权限不足、接口暂无数据或时间窗过短"
                     else:
                         error_msg = "未获取到新闻数据"
                 return CollectorResult(
@@ -450,6 +497,8 @@ class DataCollectorManager:
                         {
                             "title": n.title[:60],
                             "time": n.publish_time.strftime("%m-%d %H:%M"),
+                            "source_name": getattr(n, "source_name", "") or source.name,
+                            "language": getattr(n, "language", "zh"),
                         }
                         for n in news[:10]
                     ],

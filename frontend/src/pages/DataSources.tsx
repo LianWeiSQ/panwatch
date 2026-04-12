@@ -5,6 +5,7 @@ import { Input } from '@panwatch/base-ui/components/ui/input'
 import { Label } from '@panwatch/base-ui/components/ui/label'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Switch } from '@panwatch/base-ui/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@panwatch/base-ui/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@panwatch/base-ui/components/ui/dialog'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 
@@ -89,6 +90,16 @@ export default function DataSourcesPage() {
 
   useEffect(() => { load() }, [])
 
+  const updateConfig = (key: string, value: unknown) => {
+    setForm(prev => ({
+      ...prev,
+      config: {
+        ...(prev.config || {}),
+        [key]: value,
+      },
+    }))
+  }
+
   const openDialog = (source?: DataSource) => {
     if (source) {
       setForm({
@@ -122,6 +133,7 @@ export default function DataSourcesPage() {
       const payload = {
         priority: form.priority,
         test_symbols: testSymbols,
+        config: form.config,
       }
       await fetchAPI(`/datasources/${editId}`, { method: 'PUT', body: JSON.stringify(payload) })
       setDialogOpen(false)
@@ -229,7 +241,7 @@ export default function DataSourcesPage() {
                           size="icon"
                           className="h-7 w-7"
                           onClick={() => testSource(source.id)}
-                          disabled={testing === source.id || !source.enabled}
+                          disabled={testing === source.id}
                           title="测试连接"
                         >
                           {testing === source.id ? (
@@ -278,6 +290,96 @@ export default function DataSourcesPage() {
                 placeholder="如 601127, 600519"
               />
             </div>
+
+            {form.type === 'news' && form.provider === 'rss_feed' && (
+              <>
+                <div>
+                  <Label>RSS / Atom URL</Label>
+                  <Input
+                    value={String(form.config.feed_url || '')}
+                    onChange={e => updateConfig('feed_url', e.target.value)}
+                    placeholder="https://..."
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label>语言</Label>
+                    <Select value={String(form.config.language || 'zh')} onValueChange={value => updateConfig('language', value)}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="zh">中文</SelectItem>
+                        <SelectItem value="en">英文</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>抓取条数</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={String(form.config.fetch_limit || 40)}
+                      onChange={e => updateConfig('fetch_limit', parseInt(e.target.value, 10) || 40)}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Label>超时（秒）</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={String(form.config.timeout_s || 12)}
+                    onChange={e => updateConfig('timeout_s', parseInt(e.target.value, 10) || 12)}
+                  />
+                </div>
+              </>
+            )}
+
+            {form.type === 'news' && form.provider === 'tushare' && (
+              <>
+                <div>
+                  <Label>Tushare Token</Label>
+                  <Input
+                    type="password"
+                    value={String(form.config.token || '')}
+                    onChange={e => updateConfig('token', e.target.value)}
+                    placeholder="请输入 Tushare Token"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label>接口</Label>
+                    <Select value={String(form.config.endpoint || 'news')} onValueChange={value => updateConfig('endpoint', value)}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="news">news</SelectItem>
+                        <SelectItem value="major_news">major_news</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>来源 src</Label>
+                    <Input
+                      value={String(form.config.src || '')}
+                      onChange={e => updateConfig('src', e.target.value)}
+                      placeholder="可留空"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Label>超时（秒）</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={String(form.config.timeout_s || 15)}
+                    onChange={e => updateConfig('timeout_s', parseInt(e.target.value, 10) || 15)}
+                  />
+                </div>
+              </>
+            )}
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="ghost" onClick={() => setDialogOpen(false)}>取消</Button>
               <Button onClick={saveSource}>保存</Button>
