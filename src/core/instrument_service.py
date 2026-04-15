@@ -117,6 +117,16 @@ def _merge_tushare_meta(meta: dict[str, Any], payload: dict[str, Any]) -> dict[s
     return merged
 
 
+def _merge_quote_payload(meta: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(meta or {})
+    for key, value in (quote or {}).items():
+        if value not in (None, "", []):
+            merged[key] = value
+        else:
+            merged.setdefault(key, value)
+    return merged
+
+
 def _future_contract_to_payload(row: dict[str, Any], product: dict[str, Any]) -> dict[str, Any]:
     symbol = _normalize_symbol(row.get("symbol") or "", FUTURES_MARKET)
     raw_change_pct = row.get("changepercent")
@@ -475,8 +485,23 @@ def get_futures_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
         if item:
             resolved[symbol] = item
 
+    try:
+        contract_index = _build_contract_index()
+    except Exception:
+        contract_index = {}
+        logger.warning("future quote contract index fallback failed", exc_info=True)
+
+    for symbol in list(missing):
+        row = contract_index.get(symbol)
+        if not row:
+            continue
+        meta = resolved.get(symbol) or {}
+        results[symbol] = _merge_quote_payload(meta, row)
+
     grouped: dict[str, list[str]] = {}
-    for symbol, item in resolved.items():
+    unresolved_symbols = [symbol for symbol in missing if symbol not in results]
+    for symbol in unresolved_symbols:
+        item = resolved.get(symbol) or {}
         product_name = str(item.get("product_name") or "")
         if product_name:
             grouped.setdefault(product_name, []).append(symbol)
@@ -493,10 +518,10 @@ def get_futures_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
                 row = rows.get(symbol)
                 if not row:
                     continue
-                results[symbol] = {
-                    **meta,
-                    **_future_contract_to_payload(row, meta),
-                }
+                results[symbol] = _merge_quote_payload(
+                    meta,
+                    _future_contract_to_payload(row, meta),
+                )
         except Exception:
             logger.warning("future quote fetch failed for %s", product_name, exc_info=True)
 

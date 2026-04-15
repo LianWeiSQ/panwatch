@@ -68,7 +68,7 @@ function App() {
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const checkedUpdateRef = useRef(false)
   const mobileMoreRef = useRef<HTMLDivElement | null>(null)
-  const repoUrl = 'https://github.com/TNT-Likely/PanWatch'
+  const repoUrl = 'https://github.com/LianWeiSQ/panwatch'
   const routeFallback = (
     <div className="card min-h-[240px] flex items-center justify-center">
       <span className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+from numbers import Real
 import threading
 import time
 import uuid
@@ -12,7 +14,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable
 
-from src.collectors.akshare_collector import _fetch_tencent_quotes, _tencent_symbol
+from src.collectors.akshare_collector import (
+    _fetch_sina_global_futures_quotes,
+    _fetch_tencent_quotes,
+    _tencent_symbol,
+)
 from src.collectors.discovery_collector import EastMoneyDiscoveryCollector
 from src.collectors.kline_collector import KlineCollector, KlineData
 from src.config import Settings
@@ -49,6 +55,19 @@ MARKET_INDICES = [
         "market": "CN",
         "tencent_symbol": "sz399006",
         "response_symbol": "399006",
+    },
+]
+
+MARKET_REFERENCE_QUOTES = [
+    {
+        "symbol": "hf_XAU",
+        "name": "现货黄金",
+        "market": "CN_FUT",
+    },
+    {
+        "symbol": "hf_CL",
+        "name": "WTI原油",
+        "market": "CN_FUT",
     },
 ]
 
@@ -89,6 +108,22 @@ def _ensure_supported_discovery_market(market: MarketCode | str) -> MarketCode:
 def _copy_value(value: Any) -> Any:
     if isinstance(value, (dict, list)):
         return deepcopy(value)
+    return value
+
+
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_json_safe_value(item) for item in value)
+    if isinstance(value, Real) and not isinstance(value, bool):
+        try:
+            if not math.isfinite(float(value)):
+                return None
+        except Exception:
+            return value
     return value
 
 
@@ -343,7 +378,7 @@ class MarketDataFacade:
                 "trade_date": None,
                 "tick_time": None,
             }
-        return {
+        payload = {
             "symbol": symbol,
             "market": market.value,
             "name": quote.get("name"),
@@ -375,6 +410,7 @@ class MarketDataFacade:
             "trade_date": quote.get("trade_date"),
             "tick_time": quote.get("tick_time"),
         }
+        return _json_safe_value(payload)
 
     def get_quotes_batch(self, items: Iterable[dict[str, Any] | tuple[str, str]]) -> list[dict]:
         normalized: list[tuple[MarketCode, str]] = []
@@ -488,6 +524,43 @@ class MarketDataFacade:
                         "change_pct": quote.get("change_pct") if quote else None,
                         "change_amount": quote.get("change_amount") if quote else None,
                         "prev_close": quote.get("prev_close") if quote else None,
+                        "open_price": quote.get("open_price") if quote else None,
+                        "high_price": quote.get("high_price") if quote else None,
+                        "low_price": quote.get("low_price") if quote else None,
+                        "trade_date": "",
+                        "tick_time": "",
+                        "source_name": item["name"],
+                    }
+                )
+
+            future_map: dict[str, dict[str, Any]] = {}
+            try:
+                future_rows = _fetch_sina_global_futures_quotes(
+                    [item["symbol"] for item in MARKET_REFERENCE_QUOTES]
+                )
+                future_map = {
+                    str(row.get("symbol") or "").upper(): row
+                    for row in future_rows
+                }
+            except Exception:
+                logger.warning("failed to load market reference futures", exc_info=True)
+            for item in MARKET_REFERENCE_QUOTES:
+                quote = future_map.get(str(item["symbol"]).upper())
+                result.append(
+                    {
+                        "symbol": item["symbol"],
+                        "name": item["name"],
+                        "market": item["market"],
+                        "current_price": quote.get("current_price") if quote else None,
+                        "change_pct": quote.get("change_pct") if quote else None,
+                        "change_amount": quote.get("change_amount") if quote else None,
+                        "prev_close": quote.get("prev_close") if quote else None,
+                        "open_price": quote.get("open_price") if quote else None,
+                        "high_price": quote.get("high_price") if quote else None,
+                        "low_price": quote.get("low_price") if quote else None,
+                        "trade_date": quote.get("trade_date") if quote else "",
+                        "tick_time": quote.get("tick_time") if quote else "",
+                        "source_name": quote.get("name") if quote else item["name"],
                     }
                 )
             return result

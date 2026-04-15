@@ -1215,10 +1215,25 @@ async def trigger_agent_for_stock(
 @asynccontextmanager
 async def lifespan(app):
     """应用生命周期: 初始化 + 启动调度器"""
+    import time
+
+    startup_t0 = time.perf_counter()
+
+    def mark(step: str):
+        logger.info(
+            "startup step done: %s (+%.2fs)",
+            step,
+            time.perf_counter() - startup_t0,
+        )
+
     init_db()
+    mark("init_db")
     setup_logging()
+    mark("setup_logging")
     setup_ssl()
+    mark("setup_ssl")
     setup_playwright()
+    mark("setup_playwright")
 
     # 从环境变量初始化认证（Docker 部署用）
     from src.web.api.auth import init_auth_from_env
@@ -1229,11 +1244,16 @@ async def lifespan(app):
             logger.info("已从环境变量初始化认证账号")
     finally:
         db.close()
+    mark("init_auth_from_env")
 
     seed_agents()
+    mark("seed_agents")
     seed_data_sources()
+    mark("seed_data_sources")
     seed_strategies()
+    mark("seed_strategies")
     seed_sample_stocks()
+    mark("seed_sample_stocks")
 
     # 后台刷新股票列表缓存
     import threading
@@ -1247,6 +1267,7 @@ async def lifespan(app):
 
     if _should_refresh_stock_cache():
         threading.Thread(target=refresh_stock_cache, daemon=True).start()
+        mark("start_stock_cache_refresh_thread")
     else:
         logger.info(
             "skip stock list background refresh for service role '%s'",
@@ -1259,6 +1280,7 @@ async def lifespan(app):
 
     if _should_start_scheduler_workers():
         scheduler = build_scheduler()
+        mark("build_scheduler")
         scheduler.start()
         logger.info("Agent 调度器已启动")
         try:
@@ -1305,6 +1327,7 @@ async def lifespan(app):
             logger.error(f"market warm scheduler startup failed: {e}")
     else:
         logger.info("service role '%s' running without market warm worker", role)
+    mark("scheduler_start_complete")
     yield
     if scheduler:
         scheduler.shutdown()
@@ -1352,11 +1375,22 @@ if os.path.exists(static_dir):
 if __name__ == "__main__":
     print("盯盘侠启动: http://127.0.0.1:8000")
     print("API 文档: http://127.0.0.1:8000/docs")
-    uvicorn.run(
-        "server:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        reload_dirs=["src", "."],
-        reload_excludes=["data/*", "frontend/*", ".claude/*"],
-    )
+    reload_enabled = os.getenv("UVICORN_RELOAD", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    uvicorn_kwargs = {
+        "host": "0.0.0.0",
+        "port": 8000,
+        "reload": reload_enabled,
+    }
+    if reload_enabled:
+        uvicorn_kwargs.update(
+            {
+                "reload_dirs": ["src", "."],
+                "reload_excludes": ["data/*", "frontend/*", ".claude/*"],
+            }
+        )
+    uvicorn.run("server:app", **uvicorn_kwargs)

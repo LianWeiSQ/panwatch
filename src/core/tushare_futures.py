@@ -4,6 +4,7 @@ import logging
 import re
 import threading
 import time
+import math
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from typing import Any
@@ -77,6 +78,13 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except Exception:
         return None
+
+
+def _safe_multiplier(value: Any, default: float = 1.0) -> float:
+    number = _safe_float(value)
+    if number is None or not math.isfinite(number):
+        return float(default)
+    return float(number)
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -203,10 +211,11 @@ def _payload_from_catalog_row(
     symbol = _normalize_symbol(requested_symbol or actual_symbol)
     exchange = _normalize_exchange(row.get("exchange") or ts_code.split(".")[-1])
     product_code = _normalize_symbol(row.get("fut_code") or _extract_product_code(actual_symbol))
-    multiplier = (
+    multiplier = _safe_multiplier(
         _safe_float(row.get("multiplier"))
-        or _safe_float(row.get("per_unit"))
-        or 1.0
+        if _safe_float(row.get("multiplier")) is not None
+        else _safe_float(row.get("per_unit")),
+        default=1.0,
     )
     tick_size = (
         _safe_float(row.get("quote_unit"))

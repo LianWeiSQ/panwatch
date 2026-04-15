@@ -23,6 +23,12 @@ export interface DashboardMarketIndex {
   change_pct: number | null
   change_amount: number | null
   prev_close: number | null
+  open_price?: number | null
+  high_price?: number | null
+  low_price?: number | null
+  trade_date?: string
+  tick_time?: string
+  source_name?: string
 }
 
 export interface DashboardMarketStatus {

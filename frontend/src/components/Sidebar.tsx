@@ -34,7 +34,7 @@ export default function Sidebar({
   version, theme, collapsed, onToggleTheme, onToggleCollapse, onOpenLogs, onLogout
 }: SidebarProps) {
   const location = useLocation()
-  const repoUrl = 'https://github.com/TNT-Likely/PanWatch'
+  const repoUrl = 'https://github.com/LianWeiSQ/panwatch'
 
   return (
     <aside

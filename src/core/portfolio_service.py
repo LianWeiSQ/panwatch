@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
 
 from sqlalchemy.orm import Session, selectinload
 
 from src.core.market_data import market_data
 from src.web.models import Account, Position, Stock
+
+
+def _safe_multiplier(value: object, default: float = 1.0) -> float:
+    try:
+        number = float(value or 0)
+    except Exception:
+        return float(default)
+    if not math.isfinite(number):
+        return float(default)
+    return number
 
 
 def serialize_account(account: Account) -> dict:
@@ -103,8 +114,9 @@ def build_portfolio_summary(
             quote = quotes_by_key.get(f"{stock.market}:{stock.symbol}")
             current_price = quote.get("current_price") if quote else None
             change_pct = quote.get("change_pct") if quote else None
-            contract_multiplier = float(
-                getattr(instrument, "contract_multiplier", None) or 1.0
+            contract_multiplier = _safe_multiplier(
+                getattr(instrument, "contract_multiplier", None),
+                default=1.0,
             )
             rate = 1.0
 

@@ -35,6 +35,12 @@ interface MarketIndex {
   change_pct: number | null
   change_amount: number | null
   prev_close: number | null
+  open_price?: number | null
+  high_price?: number | null
+  low_price?: number | null
+  trade_date?: string
+  tick_time?: string
+  source_name?: string
 }
 
 interface MarketStatus {
@@ -139,6 +145,38 @@ interface AnalysisRecord {
   title: string
   content: string
   created_at: string
+}
+
+const INDEX_NAME_MAP: Record<string, string> = {
+  '000001': '上证指数',
+  '399001': '深证成指',
+  '399006': '创业板指',
+  'hf_XAU': '现货黄金',
+  'hf_CL': 'WTI原油',
+  'SSE Composite': '上证指数',
+  'SZSE Component': '深证成指',
+  'ChiNext': '创业板指',
+}
+
+const containsChinese = (value?: string | null) => /[\u4e00-\u9fff]/.test(String(value || ''))
+
+const normalizeIndexLabel = (value?: string | null) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  return INDEX_NAME_MAP[text] || text
+}
+
+const getIndexDisplayMeta = (idx: MarketIndex) => {
+  const primary = normalizeIndexLabel(idx.symbol) || normalizeIndexLabel(idx.name) || normalizeIndexLabel(idx.source_name) || idx.symbol
+  const secondary = [idx.source_name, idx.name]
+    .map(normalizeIndexLabel)
+    .filter(text => !!text && text !== primary)
+    .find(text => containsChinese(text))
+
+  return {
+    primary,
+    secondary: secondary || '',
+  }
 }
 
 const round2 = (value: number) => Math.round(value * 100) / 100
@@ -464,6 +502,11 @@ export default function DashboardPage() {
       return value.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
     }
     return value.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  }
+
+  const formatDetailPrice = (value: number | null | undefined) => {
+    if (value === null || value === undefined) return '--'
+    return formatIndexPrice(value)
   }
 
   const marketBadge = (m: string) => {
@@ -841,7 +884,7 @@ export default function DashboardPage() {
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           {indicesLoading ? (
-            Array.from({ length: 6 }).map((_, i) => (
+            Array.from({ length: 5 }).map((_, i) => (
               <div key={i} className="card p-3 animate-pulse">
                 <div className="h-4 bg-accent/50 rounded w-16 mb-2" />
                 <div className="h-6 bg-accent/50 rounded w-20 mb-1" />
@@ -854,6 +897,7 @@ export default function DashboardPage() {
               const isDown = idx.change_pct !== null && idx.change_pct < 0
               const changeColor = isUp ? 'text-rose-500' : isDown ? 'text-emerald-500' : 'text-muted-foreground'
               const bgColor = isUp ? 'bg-rose-500/5' : isDown ? 'bg-emerald-500/5' : 'bg-accent/30'
+              const displayMeta = getIndexDisplayMeta(idx)
 
               return (
                 <div key={idx.symbol} className={`card p-3 ${bgColor} border-0`}>
@@ -861,8 +905,13 @@ export default function DashboardPage() {
                     <span className={`text-[9px] px-1 py-0.5 rounded ${marketBadge(idx.market).style}`}>
                       {marketBadge(idx.market).label}
                     </span>
-                    <span className="text-[12px] text-muted-foreground">{idx.name}</span>
+                    <span className="text-[12px] text-muted-foreground">{displayMeta.primary}</span>
                   </div>
+                  {displayMeta.secondary && (
+                    <div className="mb-1 text-[10px] text-muted-foreground/70 truncate">
+                      {displayMeta.secondary}
+                    </div>
+                  )}
                   <div className={`text-[18px] font-bold font-mono ${changeColor}`}>
                     {formatIndexPrice(idx.current_price)}
                   </div>
@@ -878,6 +927,29 @@ export default function DashboardPage() {
                       '--'
                     )}
                   </div>
+                  <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground/70">开</span>
+                      <span className="font-mono text-foreground/85">{formatDetailPrice(idx.open_price)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground/70">昨</span>
+                      <span className="font-mono text-foreground/85">{formatDetailPrice(idx.prev_close)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground/70">高</span>
+                      <span className="font-mono text-foreground/85">{formatDetailPrice(idx.high_price)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground/70">低</span>
+                      <span className="font-mono text-foreground/85">{formatDetailPrice(idx.low_price)}</span>
+                    </div>
+                  </div>
+                  {(idx.trade_date || idx.tick_time) && (
+                    <div className="mt-2 text-[10px] text-muted-foreground/70 font-mono">
+                      {[idx.trade_date, idx.tick_time].filter(Boolean).join(' ')}
+                    </div>
+                  )}
                 </div>
               )
             })
@@ -1272,4 +1344,3 @@ export default function DashboardPage() {
     </div>
   )
 }
-

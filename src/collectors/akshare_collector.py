@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 # 腾讯股票行情 API（HTTP，GBK 编码）
 TENCENT_QUOTE_URL = "http://qt.gtimg.cn/q="
+SINA_GLOBAL_FUTURES_URL = "https://hq.sinajs.cn/list="
 
 # 预定义指数
 CN_INDICES = [
@@ -138,6 +139,78 @@ def _fetch_tencent_quotes(symbols: list[str]) -> list[dict]:
     for line in content.strip().split(";"):
         parsed = _parse_tencent_line(line)
         if parsed and parsed["current_price"] > 0:
+            results.append(parsed)
+    return results
+
+
+def _parse_sina_global_futures_line(line: str) -> dict | None:
+    """解析新浪全球期货/现货行情单行响应。"""
+    if "=\"\"" in line or not line.strip():
+        return None
+    try:
+        raw_name, value = line.split('="', 1)
+        value = value.rstrip('";')
+        symbol = raw_name.replace("var hq_str_", "").strip()
+        parts = [part.strip() for part in value.split(",")]
+        if len(parts) < 14:
+            return None
+
+        def _to_float(item: str | None) -> float | None:
+            text = str(item or "").strip()
+            if not text:
+                return None
+            try:
+                return float(text)
+            except (TypeError, ValueError):
+                return None
+
+        current_price = _to_float(parts[0])
+        prev_close = _to_float(parts[7]) or _to_float(parts[1])
+        open_price = _to_float(parts[2])
+        high_price = _to_float(parts[4])
+        low_price = _to_float(parts[5])
+
+        change_amount = None
+        change_pct = None
+        if current_price is not None and prev_close not in (None, 0):
+            change_amount = current_price - float(prev_close)
+            change_pct = change_amount / float(prev_close) * 100
+
+        return {
+            "symbol": symbol,
+            "name": parts[13],
+            "current_price": current_price,
+            "prev_close": prev_close,
+            "open_price": open_price,
+            "high_price": high_price,
+            "low_price": low_price,
+            "change_amount": change_amount,
+            "change_pct": change_pct,
+            "tick_time": parts[6],
+            "trade_date": parts[12],
+        }
+    except (ValueError, IndexError) as e:
+        logger.debug(f"解析新浪全球期货行情失败: {e}")
+        return None
+
+
+def _fetch_sina_global_futures_quotes(symbols: list[str]) -> list[dict]:
+    """批量获取新浪全球期货/现货行情。"""
+    if not symbols:
+        return []
+    url = SINA_GLOBAL_FUTURES_URL + ",".join(symbols)
+    headers = {
+        "Referer": "https://finance.sina.com.cn/",
+        "User-Agent": "Mozilla/5.0",
+    }
+    with httpx.Client(headers=headers) as client:
+        resp = client.get(url, timeout=10)
+        content = resp.content.decode("gbk", errors="ignore")
+
+    results = []
+    for line in content.strip().splitlines():
+        parsed = _parse_sina_global_futures_line(line)
+        if parsed and parsed.get("current_price") is not None:
             results.append(parsed)
     return results
 
