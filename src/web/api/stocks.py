@@ -14,6 +14,7 @@ from src.core.instrument_service import (
     ensure_stock_compatibility,
     search_future_instruments,
 )
+from src.core.option_service import resolve_option_contract, search_option_instruments
 from src.core.portfolio_service import list_watchlist_stocks
 from src.core.runtime_views import build_market_status, build_stocks_workspace
 from src.web.database import get_db
@@ -36,6 +37,15 @@ class StockCreate(BaseModel):
     symbol: str
     name: str
     market: str = "CN"
+    exchange: str = ""
+    underlying_symbol: str = ""
+    underlying_name: str = ""
+    contract_multiplier: float | None = None
+    tick_size: float | None = None
+    expiry_date: str = ""
+    option_type: str = ""
+    strike_price: float | None = None
+    exercise_style: str = ""
 
 
 class StockUpdate(BaseModel):
@@ -63,6 +73,8 @@ class StockResponse(BaseModel):
     tick_size: float | None = None
     expiry_date: str | None = None
     is_main_contract: bool | None = None
+    option_type: str | None = None
+    strike_price: float | None = None
     sort_order: int
     agents: list[StockAgentInfo] = []
 
@@ -106,6 +118,8 @@ def _stock_to_response(stock: Stock) -> dict:
         "tick_size": getattr(instrument, "tick_size", None),
         "expiry_date": getattr(instrument, "expiry_date", None),
         "is_main_contract": getattr(instrument, "is_main_contract", None),
+        "option_type": getattr(instrument, "option_type", None),
+        "strike_price": getattr(instrument, "strike_price", None),
         "sort_order": stock.sort_order or 0,
         "agents": [
             {
@@ -141,10 +155,14 @@ def search(q: str = Query("", min_length=1), market: str = Query("")):
                     "market": item.get("market"),
                     "instrument_type": "equity",
                     "contract_multiplier": 1.0,
+                    "option_type": "",
+                    "strike_price": None,
                 }
             )
     if market_value in {"", FUTURES_MARKET}:
         results.extend(search_future_instruments(q, limit=20))
+    if market_value in {"", OPTIONS_MARKET}:
+        results.extend(search_option_instruments(q, limit=20))
 
     deduped: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -206,18 +224,43 @@ def create_stock(stock: StockCreate, db: Session = Depends(get_db)):
         if market_value in {FUTURES_MARKET, OPTIONS_MARKET}
         else str(stock.symbol or "").strip()
     )
+    if market_value == OPTIONS_MARKET:
+        resolved = resolve_option_contract(symbol_value)
+        if not resolved:
+            raise HTTPException(400, f"unsupported option symbol: {symbol_value}")
+        symbol_value = str(resolved.get("symbol") or symbol_value)
     existing = db.query(Stock).filter(
         Stock.symbol == symbol_value, Stock.market == market_value
     ).first()
     if existing:
         raise HTTPException(400, f"股票 {stock.symbol} 已存在")
 
-    ensured = ensure_stock_compatibility(
-        db,
-        symbol=symbol_value,
-        name=stock.name,
-        market=market_value,
-    )
+    try:
+        ensured = ensure_stock_compatibility(
+            db,
+            symbol=symbol_value,
+            name=stock.name,
+            market=market_value,
+        )
+        if market_value == OPTIONS_MARKET and ensured.instrument:
+            instrument = ensured.instrument
+            instrument.exchange = stock.exchange or instrument.exchange
+            instrument.underlying_symbol = stock.underlying_symbol or instrument.underlying_symbol
+            instrument.underlying_name = stock.underlying_name or instrument.underlying_name
+            if stock.contract_multiplier is not None:
+                instrument.contract_multiplier = stock.contract_multiplier
+            if stock.tick_size is not None:
+                instrument.tick_size = stock.tick_size
+            if stock.expiry_date:
+                instrument.expiry_date = stock.expiry_date
+            if stock.option_type:
+                instrument.option_type = stock.option_type
+            if stock.strike_price is not None:
+                instrument.strike_price = stock.strike_price
+            if stock.exercise_style:
+                instrument.exercise_style = stock.exercise_style
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     db.commit()
     db_stock = ensured.stock
     if not db_stock:

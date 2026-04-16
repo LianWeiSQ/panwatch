@@ -23,6 +23,7 @@ from src.collectors.discovery_collector import EastMoneyDiscoveryCollector
 from src.collectors.kline_collector import KlineCollector, KlineData
 from src.config import Settings
 from src.core.instrument_service import get_futures_quotes
+from src.core.option_service import get_option_quotes
 from src.models.market import IndexData, MarketCode, StockData
 
 logger = logging.getLogger(__name__)
@@ -372,6 +373,9 @@ class MarketDataFacade:
                 "tick_size": None,
                 "expiry_date": None,
                 "is_main_contract": None,
+                "option_type": None,
+                "strike_price": None,
+                "exercise_style": None,
                 "position": None,
                 "bid_price": None,
                 "ask_price": None,
@@ -404,6 +408,9 @@ class MarketDataFacade:
             "tick_size": quote.get("tick_size"),
             "expiry_date": quote.get("expiry_date"),
             "is_main_contract": quote.get("is_main_contract"),
+            "option_type": quote.get("option_type"),
+            "strike_price": quote.get("strike_price"),
+            "exercise_style": quote.get("exercise_style"),
             "position": quote.get("position"),
             "bid_price": quote.get("bid_price"),
             "ask_price": quote.get("ask_price"),
@@ -442,7 +449,7 @@ class MarketDataFacade:
                 if market_code == MarketCode.CN_FUT:
                     mapped = get_futures_quotes(market_symbols)
                 elif market_code == MarketCode.CN_OPT:
-                    mapped = {}
+                    mapped = get_option_quotes(market_symbols)
                 else:
                     tencent_symbols = [_tencent_symbol(symbol, market_code) for symbol in market_symbols]
                     rows = _fetch_tencent_quotes(tencent_symbols)

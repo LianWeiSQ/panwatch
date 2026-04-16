@@ -81,6 +81,8 @@ class PositionResponse(BaseModel):
     underlying_name: str | None = None
     contract_multiplier: float | None = None
     expiry_date: str | None = None
+    option_type: str | None = None
+    strike_price: float | None = None
 
     class Config:
         from_attributes = True
@@ -195,6 +197,8 @@ def list_positions(
             "underlying_name": getattr(instrument, "underlying_name", None),
             "contract_multiplier": getattr(instrument, "contract_multiplier", 1.0),
             "expiry_date": getattr(instrument, "expiry_date", None),
+            "option_type": getattr(instrument, "option_type", None),
+            "strike_price": getattr(instrument, "strike_price", None),
         })
     return result
 
@@ -257,6 +261,8 @@ def create_position(data: PositionCreate, db: Session = Depends(get_db)):
         "underlying_name": getattr(stock.instrument, "underlying_name", None),
         "contract_multiplier": getattr(stock.instrument, "contract_multiplier", 1.0),
         "expiry_date": getattr(stock.instrument, "expiry_date", None),
+        "option_type": getattr(stock.instrument, "option_type", None),
+        "strike_price": getattr(stock.instrument, "strike_price", None),
     }
 
 
@@ -301,6 +307,8 @@ def update_position(position_id: int, data: PositionUpdate, db: Session = Depend
         "underlying_name": getattr(position.stock.instrument, "underlying_name", None),
         "contract_multiplier": getattr(position.stock.instrument, "contract_multiplier", 1.0),
         "expiry_date": getattr(position.stock.instrument, "expiry_date", None),
+        "option_type": getattr(position.stock.instrument, "option_type", None),
+        "strike_price": getattr(position.stock.instrument, "strike_price", None),
     }
 
 

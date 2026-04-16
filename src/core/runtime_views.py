@@ -261,6 +261,8 @@ def build_dashboard_runtime(
             ),
             "expiry_date": getattr(row.instrument, "expiry_date", "") or "",
             "is_main_contract": bool(getattr(row.instrument, "is_main_contract", False)),
+            "option_type": getattr(row.instrument, "option_type", "") or "",
+            "strike_price": getattr(row.instrument, "strike_price", None),
         }
         for row in watchlist_rows
     ]
@@ -332,6 +334,8 @@ def build_stocks_workspace(db: Session) -> dict:
             ),
             "expiry_date": getattr(row.instrument, "expiry_date", "") or "",
             "is_main_contract": bool(getattr(row.instrument, "is_main_contract", False)),
+            "option_type": getattr(row.instrument, "option_type", "") or "",
+            "strike_price": getattr(row.instrument, "strike_price", None),
             "agents": [
                 {
                     "agent_name": agent.agent_name,

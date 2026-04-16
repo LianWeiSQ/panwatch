@@ -21,6 +21,8 @@ export interface StockItem {
   tick_size?: number | null
   expiry_date?: string | null
   is_main_contract?: boolean | null
+  option_type?: string | null
+  strike_price?: number | null
   sort_order?: number
   agents?: StockAgentInfo[]
 }
@@ -44,8 +46,11 @@ export interface StockWorkspacePortfolioPosition {
   underlying_symbol?: string | null
   underlying_name?: string | null
   contract_multiplier?: number | null
+  tick_size?: number | null
   expiry_date?: string | null
   is_main_contract?: boolean | null
+  option_type?: string | null
+  strike_price?: number | null
   cost_price: number
   quantity: number
   invested_amount: number | null
@@ -111,6 +116,15 @@ export interface StockCreatePayload {
   symbol: string
   name: string
   market: string
+  exchange?: string
+  underlying_symbol?: string
+  underlying_name?: string
+  contract_multiplier?: number | null
+  tick_size?: number | null
+  expiry_date?: string
+  option_type?: string
+  strike_price?: number | null
+  exercise_style?: string
 }
 
 export interface StockAgentUpdatePayload {

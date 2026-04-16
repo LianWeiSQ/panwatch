@@ -49,6 +49,8 @@ interface Stock {
   tick_size?: number | null
   expiry_date?: string | null
   is_main_contract?: boolean | null
+  option_type?: string | null
+  strike_price?: number | null
   sort_order?: number
   agents: StockAgentInfo[]
 }
@@ -75,6 +77,8 @@ interface Position {
   contract_multiplier?: number | null
   expiry_date?: string | null
   is_main_contract?: boolean | null
+  option_type?: string | null
+  strike_price?: number | null
   cost_price: number
   quantity: number
   invested_amount: number | null
@@ -136,16 +140,28 @@ interface SearchResult {
   market: string
   instrument_type?: string
   exchange?: string
+  underlying_symbol?: string
   underlying_name?: string
   contract_multiplier?: number | null
+  tick_size?: number | null
   expiry_date?: string
   is_main_contract?: boolean
+  option_type?: string
+  strike_price?: number | null
 }
 
 interface StockForm {
   symbol: string
   name: string
   market: string
+  exchange?: string
+  underlying_symbol?: string
+  underlying_name?: string
+  contract_multiplier?: number | null
+  tick_size?: number | null
+  expiry_date?: string
+  option_type?: string
+  strike_price?: number | null
 }
 
 interface AccountForm {
@@ -164,6 +180,14 @@ interface PositionForm {
   stock_symbol: string
   stock_name: string
   stock_market: string
+  stock_exchange?: string
+  underlying_symbol?: string
+  underlying_name?: string
+  contract_multiplier?: number | null
+  tick_size?: number | null
+  expiry_date?: string
+  option_type?: string
+  strike_price?: number | null
 }
 
 // 鑲＄エ寤鸿淇℃伅锛堟潵鑷洏涓洃鎺?API锛?
@@ -806,7 +830,19 @@ export default function StocksPage() {
   }
 
   const selectStock = (item: SearchResult) => {
-    setStockForm({ symbol: item.symbol, name: item.name, market: item.market })
+    setStockForm({
+      symbol: item.symbol,
+      name: item.name,
+      market: item.market,
+      exchange: item.exchange || '',
+      underlying_symbol: item.underlying_symbol || '',
+      underlying_name: item.underlying_name || '',
+      contract_multiplier: item.contract_multiplier ?? null,
+      tick_size: item.tick_size ?? null,
+      expiry_date: item.expiry_date || '',
+      option_type: item.option_type || '',
+      strike_price: item.strike_price ?? null,
+    })
     setSearchQuery(`${item.symbol} ${item.name}`)
     setShowDropdown(false)
   }
@@ -914,6 +950,13 @@ export default function StocksPage() {
         stock_symbol: position.symbol,
         stock_name: position.name,
         stock_market: position.market,
+        stock_exchange: position.exchange || '',
+        underlying_symbol: position.underlying_symbol || '',
+        underlying_name: position.underlying_name || '',
+        contract_multiplier: position.contract_multiplier ?? null,
+        expiry_date: position.expiry_date || '',
+        option_type: position.option_type || '',
+        strike_price: position.strike_price ?? null,
       })
       setEditPositionId(position.id)
     } else {
@@ -927,6 +970,14 @@ export default function StocksPage() {
         stock_symbol: '',
         stock_name: '',
         stock_market: 'CN',
+        stock_exchange: '',
+        underlying_symbol: '',
+        underlying_name: '',
+        contract_multiplier: null,
+        tick_size: null,
+        expiry_date: '',
+        option_type: '',
+        strike_price: null,
       })
       setEditPositionId(null)
     }
@@ -967,6 +1018,14 @@ export default function StocksPage() {
       stock_symbol: item.symbol,
       stock_name: item.name,
       stock_market: item.market,
+      stock_exchange: item.exchange || '',
+      underlying_symbol: item.underlying_symbol || '',
+      underlying_name: item.underlying_name || '',
+      contract_multiplier: item.contract_multiplier ?? null,
+      tick_size: item.tick_size ?? null,
+      expiry_date: item.expiry_date || '',
+      option_type: item.option_type || '',
+      strike_price: item.strike_price ?? null,
     })
     setPositionSearchQuery(`${item.symbol} ${item.name}`)
     setShowPositionDropdown(false)
@@ -985,6 +1044,14 @@ export default function StocksPage() {
               symbol: positionForm.stock_symbol,
               name: positionForm.stock_name,
               market: positionForm.stock_market,
+              exchange: positionForm.stock_exchange,
+              underlying_symbol: positionForm.underlying_symbol,
+              underlying_name: positionForm.underlying_name,
+              contract_multiplier: positionForm.contract_multiplier,
+              tick_size: positionForm.tick_size,
+              expiry_date: positionForm.expiry_date,
+              option_type: positionForm.option_type,
+              strike_price: positionForm.strike_price,
             })
           })
           stockId = newStock.id
@@ -1166,6 +1233,64 @@ export default function StocksPage() {
     // 鏈€澶氭樉绀?浣嶅皬鏁帮紝鍘婚櫎鏈熬鐨?
     const formatted = value.toFixed(4).replace(/\.?0+$/, '')
     return formatted
+  }
+
+  const formatStrike = (value?: number | null) => {
+    if (value == null || !isFinite(value)) return ''
+    if (Number.isInteger(value)) return String(Math.trunc(value))
+    return value.toFixed(2).replace(/\.?0+$/, '')
+  }
+
+  const optionTypeLabel = (value?: string | null) => {
+    const normalized = String(value || '').toLowerCase()
+    if (normalized === 'call') return '看涨'
+    if (normalized === 'put') return '看跌'
+    return ''
+  }
+
+  const optionMetaTokens = (item: {
+    market?: string
+    underlying_name?: string | null
+    underlying_symbol?: string | null
+    option_type?: string | null
+    strike_price?: number | null
+    expiry_date?: string | null
+  }) => {
+    if (item.market !== 'CN_OPT') return []
+    const tokens: string[] = []
+    const underlying = String(item.underlying_name || item.underlying_symbol || '').trim()
+    if (underlying) tokens.push(`标的 ${underlying}`)
+    const optType = optionTypeLabel(item.option_type)
+    if (optType) tokens.push(optType)
+    const strike = formatStrike(item.strike_price)
+    if (strike) tokens.push(`行权价 ${strike}`)
+    const expiry = String(item.expiry_date || '').trim()
+    if (expiry) tokens.push(`到期 ${expiry}`)
+    return tokens
+  }
+
+  const renderOptionMeta = (item: {
+    market?: string
+    underlying_name?: string | null
+    underlying_symbol?: string | null
+    option_type?: string | null
+    strike_price?: number | null
+    expiry_date?: string | null
+  }) => {
+    const tokens = optionMetaTokens(item)
+    if (tokens.length === 0) return null
+    return (
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        {tokens.map(token => (
+          <span
+            key={token}
+            className="rounded-full border border-fuchsia-200/70 bg-fuchsia-500/5 px-2 py-0.5 text-[10px] text-fuchsia-700"
+          >
+            {token}
+          </span>
+        ))}
+      </div>
+    )
   }
 
   // 鑾峰彇鑲＄エ鐨勮鎯呬俊鎭?
@@ -1605,6 +1730,7 @@ export default function StocksPage() {
                   {[
                     { value: '', label: '全部' },
                     { value: 'CN', label: 'A股' },
+                    { value: 'CN_OPT', label: '期权' },
                   ].map(opt => (
                     <button
                       key={opt.value}
@@ -1657,19 +1783,25 @@ export default function StocksPage() {
                       key={`${item.market}-${item.symbol}`}
                       type="button"
                       onClick={() => selectStock(item)}
-                      className="w-full flex items-center gap-3 px-4 py-3 text-[13px] hover:bg-accent/50 text-left transition-colors"
+                      className="w-full px-4 py-3 text-left hover:bg-accent/50 transition-colors"
                     >
-                      <span className="font-mono text-muted-foreground text-[12px] w-14">{item.symbol}</span>
-                      <span className="flex-1 font-medium text-foreground">{item.name}</span>
-                      <Badge variant="secondary">{marketLabel(item.market)}</Badge>
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-muted-foreground text-[12px] w-20">{item.symbol}</span>
+                        <span className="flex-1 font-medium text-[13px] text-foreground">{item.name}</span>
+                        <Badge variant="secondary">{marketLabel(item.market)}</Badge>
+                      </div>
+                      {renderOptionMeta(item)}
                     </button>
                   ))}
                 </div>
               )}
               {stockForm.symbol && (
-                <div className="mt-2.5 flex items-center gap-2">
-                  <Badge><span className="font-mono">{stockForm.symbol}</span> {stockForm.name}</Badge>
-                  <Badge variant="secondary">{marketLabel(stockForm.market)}</Badge>
+                <div className="mt-2.5">
+                  <div className="flex items-center gap-2">
+                    <Badge><span className="font-mono">{stockForm.symbol}</span> {stockForm.name}</Badge>
+                    <Badge variant="secondary">{marketLabel(stockForm.market)}</Badge>
+                  </div>
+                  {renderOptionMeta(stockForm)}
                 </div>
               )}
             </div>
@@ -1832,31 +1964,34 @@ export default function StocksPage() {
                                   className={`group hover:bg-accent/30 transition-colors ${i > 0 ? 'border-t border-border/20' : ''} ${draggingPositionId === pos.id ? 'opacity-60' : ''}`}
                                 >
                                   <td className="px-4 py-2.5">
-                                    <span className={`text-[9px] px-1 py-0.5 rounded mr-1.5 ${badge.style}`}>{badge.label}</span>
-                                    <span className="font-mono text-[12px] font-semibold text-foreground">
-                                      {pos.symbol}
-                                    </span>
-                                    <button
-                                      className="ml-1.5 text-[12px] text-muted-foreground hover:text-primary"
-                                      onClick={() => openStockDetail(pos.symbol, pos.market, pos.name, true)}
-                                    >
-                                      {pos.name}
-                                    </button>
-                                    {(() => {
-                                      const { suggestion, kline } = getSuggestionForStock(pos.symbol, pos.market, true)
-                                      return (suggestion || kline) ? (
-                                        <span className="ml-2">
-                                          <SuggestionBadge
-                                            suggestion={suggestion}
-                                            stockName={pos.name}
-                                            stockSymbol={pos.symbol}
-                                            kline={kline}
-                                            market={pos.market}
-                                            hasPosition={true}
-                                          />
-                                        </span>
-                                      ) : null
-                                    })()}
+                                    <div className="flex items-center gap-1.5">
+                                      <span className={`text-[9px] px-1 py-0.5 rounded ${badge.style}`}>{badge.label}</span>
+                                      <span className="font-mono text-[12px] font-semibold text-foreground">
+                                        {pos.symbol}
+                                      </span>
+                                      <button
+                                        className="text-[12px] text-muted-foreground hover:text-primary"
+                                        onClick={() => openStockDetail(pos.symbol, pos.market, pos.name, true)}
+                                      >
+                                        {pos.name}
+                                      </button>
+                                      {(() => {
+                                        const { suggestion, kline } = getSuggestionForStock(pos.symbol, pos.market, true)
+                                        return (suggestion || kline) ? (
+                                          <span className="ml-2">
+                                            <SuggestionBadge
+                                              suggestion={suggestion}
+                                              stockName={pos.name}
+                                              stockSymbol={pos.symbol}
+                                              kline={kline}
+                                              market={pos.market}
+                                              hasPosition={true}
+                                            />
+                                          </span>
+                                        ) : null
+                                      })()}
+                                    </div>
+                                    {renderOptionMeta(pos)}
                                   </td>
                                   <td className={`px-4 py-2.5 text-right font-mono text-[12px] ${changeColor}`}>
                                     {pos.current_price != null ? <span>{pos.current_price.toFixed(2)}</span> : '--'}
@@ -2001,6 +2136,7 @@ export default function StocksPage() {
                                   >
                                     {pos.name}
                                   </button>
+                                  {renderOptionMeta(pos)}
                                   {pos.trading_style && (
                                     <span className={`text-[9px] px-1 py-0.5 rounded ${pos.trading_style === 'short' ? 'bg-rose-500/10 text-rose-600' : pos.trading_style === 'long' ? 'bg-blue-500/10 text-blue-600' : 'bg-amber-500/10 text-amber-600'}`}>
                                       {pos.trading_style === 'short' ? '短' : pos.trading_style === 'long' ? '长' : '波'}
@@ -2105,6 +2241,8 @@ export default function StocksPage() {
               {[
                 { value: '', label: '全部', count: stocks.length },
                 { value: 'CN', label: 'A股', count: stocks.filter(s => s.market === 'CN').length },
+                { value: 'CN_FUT', label: '期货', count: stocks.filter(s => s.market === 'CN_FUT').length },
+                { value: 'CN_OPT', label: '期权', count: stocks.filter(s => s.market === 'CN_OPT').length },
               ].map(opt => (
                 <button
                   key={opt.value}
@@ -2212,6 +2350,7 @@ export default function StocksPage() {
                             {stock.name}
                           </button>
                         </div>
+                        {renderOptionMeta(stock)}
                       </div>
                       <div className="text-right">
                         <div className={`font-mono text-[14px] font-bold leading-tight ${changeColor}`}>
@@ -2426,12 +2565,15 @@ export default function StocksPage() {
           </DialogHeader>
           <div className="space-y-4 mt-2">
             {editPositionId ? (
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent/30">
-                <span className={`text-[9px] px-1.5 py-0.5 rounded ${marketBadge(positionForm.stock_market).style}`}>
-                  {marketBadge(positionForm.stock_market).label}
-                </span>
-                <span className="font-mono text-[12px] text-muted-foreground">{positionForm.stock_symbol}</span>
-                <span className="text-[13px] text-foreground">{positionForm.stock_name}</span>
+              <div className="px-3 py-2 rounded-lg bg-accent/30">
+                <div className="flex items-center gap-2">
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded ${marketBadge(positionForm.stock_market).style}`}>
+                    {marketBadge(positionForm.stock_market).label}
+                  </span>
+                  <span className="font-mono text-[12px] text-muted-foreground">{positionForm.stock_symbol}</span>
+                  <span className="text-[13px] text-foreground">{positionForm.stock_name}</span>
+                </div>
+                {renderOptionMeta(positionForm)}
               </div>
             ) : (
               <div>
@@ -2442,6 +2584,7 @@ export default function StocksPage() {
                       { value: '', label: '全部' },
                       { value: 'CN', label: 'A股' },
                       { value: 'CN_FUT', label: '期货' },
+                      { value: 'CN_OPT', label: '期权' },
                     ].map(opt => (
                       <button
                         key={opt.value}
@@ -2476,35 +2619,55 @@ export default function StocksPage() {
                           key={`${item.market}-${item.symbol}`}
                           type="button"
                           onClick={() => selectPositionStock(item)}
-                          className="w-full flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-accent/50 text-left transition-colors"
+                          className="w-full px-3 py-2 text-left hover:bg-accent/50 transition-colors"
                         >
-                          <span className={`text-[9px] px-1 py-0.5 rounded ${marketBadge(item.market).style}`}>
-                            {marketBadge(item.market).label}
-                          </span>
-                          <span className="font-mono text-muted-foreground text-[12px]">{item.symbol}</span>
-                          <span className="flex-1 text-foreground">{item.name}</span>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[9px] px-1 py-0.5 rounded ${marketBadge(item.market).style}`}>
+                              {marketBadge(item.market).label}
+                            </span>
+                            <span className="font-mono text-muted-foreground text-[12px]">{item.symbol}</span>
+                            <span className="flex-1 text-[13px] text-foreground">{item.name}</span>
+                          </div>
+                          {renderOptionMeta(item)}
                         </button>
                       ))}
                     </div>
                   )}
                 </div>
                 {positionForm.stock_symbol && (
-                  <div className="mt-2 flex items-center gap-2">
-                    <span className={`text-[9px] px-1.5 py-0.5 rounded ${marketBadge(positionForm.stock_market).style}`}>
-                      {marketBadge(positionForm.stock_market).label}
-                    </span>
-                    <span className="font-mono text-[12px] text-muted-foreground">{positionForm.stock_symbol}</span>
-                    <span className="text-[13px] text-foreground">{positionForm.stock_name}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPositionForm({ ...positionForm, stock_id: 0, stock_symbol: '', stock_name: '', stock_market: '' })
-                        setPositionSearchQuery('')
-                      }}
-                      className="ml-1 text-muted-foreground hover:text-destructive"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
+                  <div className="mt-2">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded ${marketBadge(positionForm.stock_market).style}`}>
+                        {marketBadge(positionForm.stock_market).label}
+                      </span>
+                      <span className="font-mono text-[12px] text-muted-foreground">{positionForm.stock_symbol}</span>
+                      <span className="text-[13px] text-foreground">{positionForm.stock_name}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPositionForm({
+                            ...positionForm,
+                            stock_id: 0,
+                            stock_symbol: '',
+                            stock_name: '',
+                            stock_market: '',
+                            stock_exchange: '',
+                            underlying_symbol: '',
+                            underlying_name: '',
+                            contract_multiplier: null,
+                            tick_size: null,
+                            expiry_date: '',
+                            option_type: '',
+                            strike_price: null,
+                          })
+                          setPositionSearchQuery('')
+                        }}
+                        className="ml-1 text-muted-foreground hover:text-destructive"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    {renderOptionMeta(positionForm)}
                   </div>
                 )}
               </div>

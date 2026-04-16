@@ -8887,3 +8887,37 @@ INFO:     127.0.0.1:60530 - "GET /api/dashboard/runtime?boards_mode=gainers&stoc
 INFO:     127.0.0.1:60595 - "GET /api/dashboard/runtime?boards_mode=gainers&stocks_mode=for_you HTTP/1.1" 200 OK
 INFO:     127.0.0.1:60661 - "GET /api/dashboard/runtime?boards_mode=gainers&stocks_mode=for_you HTTP/1.1" 200 OK
 INFO:     127.0.0.1:60698 - "GET /api/dashboard/runtime?boards_mode=gainers&stocks_mode=for_you HTTP/1.1" 200 OK
+盯盘侠启动: http://127.0.0.1:8000
+API 文档: http://127.0.0.1:8000/docs
+INFO:     127.0.0.1:51899 - "GET /api/recommendations/strategy-signals?market=CN&status=active&min_score=70&limit=120&source_pool=all&holding=unheld&risk_level=all&include_payload=false HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51902 - "GET /api/stocks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51901 - "GET /api/recommendations/strategy-catalog?enabled_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51900 - "GET /api/recommendations/strategy-stats?days=45 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51904 - "GET /api/stocks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51903 - "GET /api/recommendations/strategy-signals?market=CN&status=active&min_score=70&limit=120&source_pool=all&holding=unheld&risk_level=all&include_payload=false HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51907 - "GET /api/recommendations/strategy-catalog?enabled_only=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51910 - "GET /api/recommendations/strategy-stats?days=45 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51920 - "GET /api/price-alerts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51922 - "GET /api/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51921 - "GET /api/stocks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51927 - "GET /api/price-alerts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51929 - "GET /api/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51931 - "GET /api/stocks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51934 - "GET /api/history?kind=workflow&limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51937 - "GET /api/history?kind=workflow&limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51943 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51946 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51942 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51949 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52002 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52088 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52304 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52598 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52623 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52652 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52736 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53047 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53486 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53594 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53846 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53898 - "GET /api/news-analysis/runtime?hours=72&related_only=false&limit=120 HTTP/1.1" 200 OK

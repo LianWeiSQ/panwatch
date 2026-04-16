@@ -10,6 +10,7 @@ import httpx
 import time
 
 from src.core.cn_symbol import get_cn_prefix, is_cn_sh
+from src.core.option_service import get_option_daily_bars
 from src.core.tushare_futures import (
     TushareUnavailable,
     get_tushare_futures_daily_bars,
@@ -89,6 +90,31 @@ def _fetch_cn_futures_klines(symbol: str, days: int) -> list["KlineData"]:
         return rows
     except Exception as exc:
         logger.warning("failed to fetch futures klines for %s: %s", value, exc)
+        return []
+
+
+def _fetch_cn_options_klines(symbol: str, days: int) -> list["KlineData"]:
+    value = (symbol or "").strip().upper()
+    if not value:
+        return []
+    try:
+        rows = get_option_daily_bars(value, days=max(1, int(days or 1)))
+        if not rows:
+            return []
+        logger.info("cn_opt kline provider=akshare symbol=%s count=%s", value, len(rows))
+        return [
+            KlineData(
+                date=str(row.get("date") or ""),
+                open=float(row.get("open") or 0),
+                close=float(row.get("close") or 0),
+                high=float(row.get("high") or 0),
+                low=float(row.get("low") or 0),
+                volume=float(row.get("volume") or 0),
+            )
+            for row in rows
+        ]
+    except Exception as exc:
+        logger.warning("failed to fetch option klines for %s: %s", value, exc)
         return []
 
 
@@ -553,6 +579,8 @@ class KlineCollector:
         """获取日K线数据"""
         if self.market == MarketCode.CN_FUT:
             return _fetch_cn_futures_klines(symbol, days)
+        if self.market == MarketCode.CN_OPT:
+            return _fetch_cn_options_klines(symbol, days)
 
         tencent_sym = _tencent_symbol(symbol, self.market)
 

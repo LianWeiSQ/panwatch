@@ -158,6 +158,8 @@ def build_portfolio_summary(
                     "contract_multiplier": contract_multiplier,
                     "expiry_date": getattr(instrument, "expiry_date", "") or "",
                     "is_main_contract": bool(getattr(instrument, "is_main_contract", False)),
+                    "option_type": getattr(instrument, "option_type", "") or "",
+                    "strike_price": getattr(instrument, "strike_price", None),
                     "cost_price": position.cost_price,
                     "quantity": position.quantity,
                     "invested_amount": position.invested_amount,

@@ -14,9 +14,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.models.market import MarketCode
+from src.core.option_service import resolve_option_contract
 from src.core.tushare_futures import (
     TushareUnavailable,
-    get_tushare_futures_quotes,
     resolve_tushare_future_contract,
     search_tushare_future_instruments,
 )
@@ -102,6 +102,12 @@ def _parse_expiry_from_contract(symbol: str) -> str:
     return f"{year:04d}-{month:02d}"
 
 
+def _extract_contract_prefix(symbol: str) -> str:
+    text = str(symbol or "").strip().upper()
+    match = re.match(r"^[A-Z]{1,4}", text)
+    return match.group(0) if match else ""
+
+
 def _merge_tushare_meta(meta: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     merged = dict(meta or {})
     for key in (
@@ -124,6 +130,41 @@ def _merge_quote_payload(meta: dict[str, Any], quote: dict[str, Any]) -> dict[st
             merged[key] = value
         else:
             merged.setdefault(key, value)
+    return merged
+
+
+def _normalize_future_quote_payload(symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(payload or {})
+    contract_symbol = _normalize_symbol(symbol, FUTURES_MARKET)
+    merged["symbol"] = contract_symbol
+    if not merged.get("display_symbol"):
+        merged["display_symbol"] = contract_symbol
+    merged.setdefault("instrument_type", "future")
+    merged.setdefault("market", FUTURES_MARKET)
+    if not merged.get("name"):
+        merged["name"] = contract_symbol
+    if not merged.get("currency"):
+        merged["currency"] = "CNY"
+    if not merged.get("contract_multiplier"):
+        merged["contract_multiplier"] = 1.0
+    if not merged.get("expiry_date"):
+        merged["expiry_date"] = _parse_expiry_from_contract(contract_symbol)
+    if "is_main_contract" not in merged or merged.get("is_main_contract") is None:
+        merged["is_main_contract"] = contract_symbol.endswith("0")
+    if not merged.get("underlying_symbol"):
+        merged["underlying_symbol"] = _extract_contract_prefix(contract_symbol)
+    if not merged.get("product_name"):
+        merged["product_name"] = (
+            str(merged.get("underlying_name") or "")
+            or str(merged.get("name") or "")
+            or contract_symbol
+        )
+    if not merged.get("underlying_name"):
+        merged["underlying_name"] = (
+            str(merged.get("product_name") or "")
+            or str(merged.get("name") or "")
+            or contract_symbol
+        )
     return merged
 
 
@@ -451,55 +492,27 @@ def get_futures_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
         return {}
 
     results: dict[str, dict[str, Any]] = {}
-    missing = list(normalized)
-    try:
-        tushare_results = get_tushare_futures_quotes(normalized)
-        if tushare_results:
-            results.update(tushare_results)
-            missing = [symbol for symbol in normalized if symbol not in tushare_results]
-            logger.info(
-                "cn_fut quotes provider=tushare fallback=%s requested=%s resolved=%s",
-                "true" if missing else "false",
-                len(normalized),
-                len(tushare_results),
-            )
-    except TushareUnavailable as exc:
-        logger.info(
-            "cn_fut quotes provider=tushare fallback=true requested=%s reason=%s",
-            len(normalized),
-            exc,
-        )
-    except Exception as exc:
-        logger.warning(
-            "cn_fut quotes provider=tushare fallback=true requested=%s reason=%s",
-            len(normalized),
-            exc,
-        )
-
-    if not missing:
-        return results
-
-    resolved: dict[str, dict[str, Any]] = {}
-    for symbol in missing:
-        item = resolve_future_contract(symbol)
-        if item:
-            resolved[symbol] = item
-
     try:
         contract_index = _build_contract_index()
     except Exception:
         contract_index = {}
-        logger.warning("future quote contract index fallback failed", exc_info=True)
+        logger.warning("future quote contract index fetch failed", exc_info=True)
 
-    for symbol in list(missing):
+    for symbol in normalized:
         row = contract_index.get(symbol)
         if not row:
             continue
-        meta = resolved.get(symbol) or {}
-        results[symbol] = _merge_quote_payload(meta, row)
+        results[symbol] = _normalize_future_quote_payload(symbol, row)
+
+    unresolved_symbols = [symbol for symbol in normalized if symbol not in results]
+
+    resolved: dict[str, dict[str, Any]] = {}
+    for symbol in unresolved_symbols:
+        item = resolve_future_contract(symbol)
+        if item:
+            resolved[symbol] = item
 
     grouped: dict[str, list[str]] = {}
-    unresolved_symbols = [symbol for symbol in missing if symbol not in results]
     for symbol in unresolved_symbols:
         item = resolved.get(symbol) or {}
         product_name = str(item.get("product_name") or "")
@@ -518,37 +531,40 @@ def get_futures_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
                 row = rows.get(symbol)
                 if not row:
                     continue
-                results[symbol] = _merge_quote_payload(
-                    meta,
-                    _future_contract_to_payload(row, meta),
+                results[symbol] = _normalize_future_quote_payload(
+                    symbol,
+                    _merge_quote_payload(
+                        meta,
+                        _future_contract_to_payload(row, meta),
+                    ),
                 )
         except Exception:
             logger.warning("future quote fetch failed for %s", product_name, exc_info=True)
 
-    if missing:
-        logger.info(
-            "cn_fut quotes provider=akshare fallback=true requested=%s resolved=%s",
-            len(missing),
-            len([symbol for symbol in missing if symbol in results]),
-        )
+    logger.info(
+        "cn_fut quotes provider=akshare requested=%s resolved=%s",
+        len(normalized),
+        len([symbol for symbol in normalized if results.get(symbol, {}).get("current_price") is not None]),
+    )
 
     for symbol in normalized:
-        results.setdefault(symbol, resolved.get(symbol) or {
-            "instrument_type": "future",
-            "market": FUTURES_MARKET,
-            "symbol": symbol,
-            "display_symbol": symbol,
-            "name": symbol,
-            "current_price": None,
-            "change_pct": None,
-            "change_amount": None,
-            "prev_close": None,
-            "open_price": None,
-            "high_price": None,
-            "low_price": None,
-            "volume": None,
-            "turnover": None,
-        })
+        results.setdefault(
+            symbol,
+            _normalize_future_quote_payload(
+                symbol,
+                resolved.get(symbol) or {
+                    "current_price": None,
+                    "change_pct": None,
+                    "change_amount": None,
+                    "prev_close": None,
+                    "open_price": None,
+                    "high_price": None,
+                    "low_price": None,
+                    "volume": None,
+                    "turnover": None,
+                },
+            ),
+        )
     return results
 
 
@@ -702,6 +718,10 @@ def ensure_option_instrument(
     exercise_style: str = "",
 ) -> Instrument:
     normalized_symbol = _normalize_symbol(symbol, OPTIONS_MARKET)
+    resolved = resolve_option_contract(normalized_symbol) or {}
+    if not resolved and normalized_symbol:
+        raise ValueError(f"unsupported option symbol: {normalized_symbol}")
+    normalized_symbol = str(resolved.get("symbol") or normalized_symbol)
     instrument = get_instrument_by_key(
         db,
         instrument_type="option",
@@ -713,37 +733,76 @@ def ensure_option_instrument(
             instrument_type="option",
             market=OPTIONS_MARKET,
             symbol=normalized_symbol,
-            display_symbol=normalized_symbol,
-            name=str(name or normalized_symbol),
-            exchange=_normalize_exchange(exchange),
+            display_symbol=str(resolved.get("display_symbol") or normalized_symbol),
+            name=str(name or resolved.get("name") or normalized_symbol),
+            exchange=_normalize_exchange(exchange or resolved.get("exchange")),
             currency="CNY",
-            underlying_symbol=str(underlying_symbol or ""),
-            underlying_name=str(underlying_name or ""),
-            contract_multiplier=float(contract_multiplier or 1.0),
-            tick_size=tick_size,
-            expiry_date=str(expiry_date or ""),
-            option_type=str(option_type or "").lower(),
-            strike_price=strike_price,
-            exercise_style=str(exercise_style or ""),
+            underlying_symbol=str(
+                underlying_symbol or resolved.get("underlying_symbol") or ""
+            ),
+            underlying_name=str(
+                underlying_name or resolved.get("underlying_name") or ""
+            ),
+            contract_multiplier=float(
+                contract_multiplier
+                or resolved.get("contract_multiplier")
+                or 1.0
+            ),
+            tick_size=tick_size if tick_size is not None else resolved.get("tick_size"),
+            expiry_date=str(expiry_date or resolved.get("expiry_date") or ""),
+            option_type=str(option_type or resolved.get("option_type") or "").lower(),
+            strike_price=(
+                strike_price
+                if strike_price is not None
+                else resolved.get("strike_price")
+            ),
+            exercise_style=str(exercise_style or resolved.get("exercise_style") or ""),
         )
         db.add(instrument)
         db.flush()
         return instrument
 
-    instrument.name = str(name or instrument.name or normalized_symbol)
-    instrument.display_symbol = instrument.display_symbol or normalized_symbol
-    instrument.exchange = _normalize_exchange(exchange or instrument.exchange)
+    instrument.name = str(name or resolved.get("name") or instrument.name or normalized_symbol)
+    instrument.display_symbol = str(
+        resolved.get("display_symbol") or instrument.display_symbol or normalized_symbol
+    )
+    instrument.exchange = _normalize_exchange(exchange or instrument.exchange or resolved.get("exchange"))
     instrument.currency = instrument.currency or "CNY"
-    instrument.underlying_symbol = str(underlying_symbol or instrument.underlying_symbol or "")
-    instrument.underlying_name = str(underlying_name or instrument.underlying_name or "")
-    instrument.contract_multiplier = float(contract_multiplier or instrument.contract_multiplier or 1.0)
+    instrument.underlying_symbol = str(
+        underlying_symbol
+        or instrument.underlying_symbol
+        or resolved.get("underlying_symbol")
+        or ""
+    )
+    instrument.underlying_name = str(
+        underlying_name
+        or instrument.underlying_name
+        or resolved.get("underlying_name")
+        or ""
+    )
+    instrument.contract_multiplier = float(
+        contract_multiplier
+        or instrument.contract_multiplier
+        or resolved.get("contract_multiplier")
+        or 1.0
+    )
     if tick_size is not None:
         instrument.tick_size = tick_size
+    elif instrument.tick_size is None and resolved.get("tick_size") is not None:
+        instrument.tick_size = resolved.get("tick_size")
     instrument.expiry_date = str(expiry_date or instrument.expiry_date or "")
-    instrument.option_type = str(option_type or instrument.option_type or "").lower()
+    if not instrument.expiry_date and resolved.get("expiry_date"):
+        instrument.expiry_date = str(resolved.get("expiry_date") or "")
+    instrument.option_type = str(
+        option_type or resolved.get("option_type") or instrument.option_type or ""
+    ).lower()
     if strike_price is not None:
         instrument.strike_price = strike_price
+    elif instrument.strike_price is None and resolved.get("strike_price") is not None:
+        instrument.strike_price = resolved.get("strike_price")
     instrument.exercise_style = str(exercise_style or instrument.exercise_style or "")
+    if not instrument.exercise_style and resolved.get("exercise_style"):
+        instrument.exercise_style = str(resolved.get("exercise_style") or "")
     return instrument
 
 

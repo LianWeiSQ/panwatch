@@ -13,6 +13,7 @@ from src.core.instrument_service import (
     get_or_create_compat_stock_for_instrument,
     search_future_instruments,
 )
+from src.core.option_service import search_option_instruments
 from src.web.database import get_db
 from src.web.models import Instrument
 from src.web.stock_list import search_stocks
@@ -83,7 +84,7 @@ def _instrument_to_response(instrument: Instrument) -> dict:
             if stock
             else None
         ),
-        "runtime_supported": instrument.instrument_type in {"equity", "future"},
+        "runtime_supported": instrument.instrument_type in {"equity", "future", "option"},
     }
 
 
@@ -127,6 +128,9 @@ def search_instruments(
     if type_value == "future":
         return search_future_instruments(q, exchange="", limit=limit)
 
+    if type_value == "option":
+        return search_option_instruments(q, limit=limit)
+
     return []
 
 
@@ -163,20 +167,23 @@ def ensure_instrument(payload: InstrumentEnsureRequest, db: Session = Depends(ge
             is_main_contract=payload.is_main_contract,
         )
     elif type_value == "option":
-        instrument = ensure_option_instrument(
-            db,
-            symbol=symbol,
-            name=payload.name,
-            exchange=payload.exchange,
-            underlying_symbol=payload.underlying_symbol,
-            underlying_name=payload.underlying_name,
-            contract_multiplier=payload.contract_multiplier,
-            tick_size=payload.tick_size,
-            expiry_date=payload.expiry_date,
-            option_type=payload.option_type,
-            strike_price=payload.strike_price,
-            exercise_style=payload.exercise_style,
-        )
+        try:
+            instrument = ensure_option_instrument(
+                db,
+                symbol=symbol,
+                name=payload.name,
+                exchange=payload.exchange,
+                underlying_symbol=payload.underlying_symbol,
+                underlying_name=payload.underlying_name,
+                contract_multiplier=payload.contract_multiplier,
+                tick_size=payload.tick_size,
+                expiry_date=payload.expiry_date,
+                option_type=payload.option_type,
+                strike_price=payload.strike_price,
+                exercise_style=payload.exercise_style,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     else:
         raise HTTPException(400, f"unsupported instrument_type: {type_value}")
 
